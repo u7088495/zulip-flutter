@@ -243,6 +243,30 @@ abstract class ZulipLocalizations {
   /// **'Unfollow topic'**
   String get actionSheetOptionUnfollowTopic;
 
+  /// Label for the 'Mark as resolved' button on the topic action sheet.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark as resolved'**
+  String get actionSheetOptionResolveTopic;
+
+  /// Label for the 'Mark as unresolved' button on the topic action sheet.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark as unresolved'**
+  String get actionSheetOptionUnresolveTopic;
+
+  /// Error title when marking a topic as resolved failed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to mark topic as resolved'**
+  String get errorResolveTopicFailedTitle;
+
+  /// Error title when marking a topic as unresolved failed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to mark topic as unresolved'**
+  String get errorUnresolveTopicFailedTitle;
+
   /// Label for copy message text button on action sheet.
   ///
   /// In en, this message translates to:
@@ -327,6 +351,12 @@ abstract class ZulipLocalizations {
   /// **'Failed to upload file: {filename}'**
   String errorFailedToUploadFileTitle(String filename);
 
+  /// The name of a file, and its size in mebibytes.
+  ///
+  /// In en, this message translates to:
+  /// **'{filename}: {size} MiB'**
+  String filenameAndSizeInMiB(String filename, String size);
+
   /// Error message when attached files are too large in size.
   ///
   /// In en, this message translates to:
@@ -367,7 +397,7 @@ abstract class ZulipLocalizations {
   ///
   /// In en, this message translates to:
   /// **'Could not connect'**
-  String get errorLoginCouldNotConnectTitle;
+  String get errorCouldNotConnectTitle;
 
   /// Error message when loading a message that does not exist.
   ///
@@ -537,11 +567,11 @@ abstract class ZulipLocalizations {
   /// **'Jot down something'**
   String get composeBoxSelfDmContentHint;
 
-  /// Hint text for content input when sending a message to a channel
+  /// Hint text for content input when sending a message to a channel.
   ///
   /// In en, this message translates to:
-  /// **'Message #{channel} > {topic}'**
-  String composeBoxChannelContentHint(String channel, String topic);
+  /// **'Message {destination}'**
+  String composeBoxChannelContentHint(String destination);
 
   /// Tooltip for send button in compose box.
   ///
@@ -600,7 +630,7 @@ abstract class ZulipLocalizations {
   /// Message list recipient header for a DM group that only includes yourself.
   ///
   /// In en, this message translates to:
-  /// **'You with yourself'**
+  /// **'Messages with yourself'**
   String get messageListGroupYouWithYourself;
 
   /// Content validation error message when the message is too long.
@@ -711,11 +741,11 @@ abstract class ZulipLocalizations {
   /// **'Add an account'**
   String get loginAddAnAccountPageTitle;
 
-  /// Input label in login page for Zulip server URL entry.
+  /// Label in login page for Zulip server URL entry.
   ///
   /// In en, this message translates to:
   /// **'Your Zulip server URL'**
-  String get loginServerUrlInputLabel;
+  String get loginServerUrlLabel;
 
   /// Icon label for button to hide password in input form.
   ///
@@ -770,6 +800,12 @@ abstract class ZulipLocalizations {
   /// In en, this message translates to:
   /// **'Topics are required in this organization.'**
   String get topicValidationErrorMandatoryButEmpty;
+
+  /// Error message in the dialog for invalid API key.
+  ///
+  /// In en, this message translates to:
+  /// **'Your account at {url} could not be authenticated. Please try logging in again or use another account.'**
+  String errorInvalidApiKeyMessage(String url);
 
   /// Error message when an API call returned an invalid response.
   ///
@@ -1166,6 +1202,18 @@ abstract class ZulipLocalizations {
   /// In en, this message translates to:
   /// **'Scroll to bottom'**
   String get scrollToBottomTooltip;
+
+  /// Placeholder to show in place of the app version when it is unknown.
+  ///
+  /// In en, this message translates to:
+  /// **'(…)'**
+  String get appVersionUnknownPlaceholder;
+
+  /// The name of Zulip. This should be either 'Zulip' or a transliteration.
+  ///
+  /// In en, this message translates to:
+  /// **'Zulip'**
+  String get zulipAppTitle;
 }
 
 class _ZulipLocalizationsDelegate extends LocalizationsDelegate<ZulipLocalizations> {

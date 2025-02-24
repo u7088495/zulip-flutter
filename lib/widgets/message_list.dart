@@ -3,7 +3,7 @@ import 'dart:math';
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_color_models/flutter_color_models.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' hide TextDirection;
 
 import '../api/model/model.dart';
 import '../generated/l10n/zulip_localizations.dart';
@@ -153,7 +153,7 @@ class MessageListTheme extends ThemeExtension<MessageListTheme> {
     return MessageListTheme._(
       dateSeparator: Color.lerp(dateSeparator, other.dateSeparator, t)!,
       dateSeparatorText: Color.lerp(dateSeparatorText, other.dateSeparatorText, t)!,
-      dmRecipientHeaderBg: Color.lerp(streamMessageBgDefault, other.dmRecipientHeaderBg, t)!,
+      dmRecipientHeaderBg: Color.lerp(dmRecipientHeaderBg, other.dmRecipientHeaderBg, t)!,
       messageTimestamp: Color.lerp(messageTimestamp, other.messageTimestamp, t)!,
       recipientHeaderText: Color.lerp(recipientHeaderText, other.recipientHeaderText, t)!,
       senderBotIcon: Color.lerp(senderBotIcon, other.senderBotIcon, t)!,
@@ -188,7 +188,7 @@ abstract class MessageListPageState {
 class MessageListPage extends StatefulWidget {
   const MessageListPage({super.key, required this.initNarrow});
 
-  static Route<void> buildRoute({int? accountId, BuildContext? context,
+  static AccountRoute<void> buildRoute({int? accountId, BuildContext? context,
       required Narrow narrow}) {
     return MaterialAccountWidgetRoute(accountId: accountId, context: context,
       page: MessageListPage(initNarrow: narrow));
@@ -277,7 +277,9 @@ class _MessageListPageState extends State<MessageListPage> implements MessageLis
             narrow: ChannelNarrow(streamId)))));
     }
 
-    return Scaffold(
+    // Insert a PageRoot here, to provide a context that can be used for
+    // MessageListPage.ancestorOf.
+    return PageRoot(child: Scaffold(
       appBar: ZulipAppBar(
         buildTitle: (willCenterTitle) =>
           MessageListAppBarTitle(narrow: narrow, willCenterTitle: willCenterTitle),
@@ -318,7 +320,7 @@ class _MessageListPageState extends State<MessageListPage> implements MessageLis
                 ))),
             if (ComposeBox.hasComposeBox(narrow))
               ComposeBox(key: _composeBoxKey, narrow: narrow)
-          ])));
+          ]))));
   }
 }
 
@@ -402,8 +404,20 @@ class MessageListAppBarTitle extends StatelessWidget {
           width: double.infinity,
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onLongPress: () => showTopicActionSheet(context,
-              channelId: streamId, topic: topic),
+            onLongPress: () {
+              final someMessage = MessageListPage.ancestorOf(context)
+                .model?.messages.firstOrNull;
+              // If someMessage is null, the topic action sheet won't have a
+              // resolve/unresolve button. That seems OK; in that case we're
+              // either still fetching messages (and the user can reopen the
+              // sheet after that finishes) or there aren't any messages to
+              // act on anyway.
+              assert(someMessage == null || narrow.containsMessage(someMessage));
+              showTopicActionSheet(context,
+                channelId: streamId,
+                topic: topic,
+                someMessageIdInTopic: someMessage?.id);
+            },
             child: Column(
               crossAxisAlignment: willCenterTitle ? CrossAxisAlignment.center
                                                   : CrossAxisAlignment.start,
@@ -469,6 +483,7 @@ class _MessageListState extends State<MessageList> with PerAccountStoreAwareStat
 
   @override
   void onNewStore() { // TODO(#464) try to keep using old model until new one gets messages
+    model?.dispose();
     _initModel(PerAccountStoreWidget.of(context));
   }
 
@@ -488,8 +503,11 @@ class _MessageListState extends State<MessageList> with PerAccountStoreAwareStat
 
   void _modelChanged() {
     if (model!.narrow != widget.narrow) {
-      // A message move event occurred, where propagate mode is
-      // [PropagateMode.changeAll] or [PropagateMode.changeLater].
+      // Either:
+      // - A message move event occurred, where propagate mode is
+      //   [PropagateMode.changeAll] or [PropagateMode.changeLater]. Or:
+      // - We fetched a "with" / topic-permalink narrow, and the response
+      //   redirected us to the new location of the operand message ID.
       widget.onNarrowChanged(model!.narrow);
     }
     setState(() {
@@ -788,7 +806,7 @@ class _MarkAsReadWidgetState extends State<MarkAsReadWidget> {
   void _handlePress(BuildContext context) async {
     if (!context.mounted) return;
     setState(() => _loading = true);
-    await markNarrowAsRead(context, widget.narrow);
+    await ZulipAction.markNarrowAsRead(context, widget.narrow);
     setState(() => _loading = false);
   }
 
@@ -1125,7 +1143,9 @@ class StreamMessageRecipientHeader extends StatelessWidget {
             MessageListPage.buildRoute(context: context,
               narrow: TopicNarrow.ofMessage(message))),
       onLongPress: () => showTopicActionSheet(context,
-        channelId: message.streamId, topic: topic),
+        channelId: message.streamId,
+        topic: topic,
+        someMessageIdInTopic: message.id),
       child: ColoredBox(
         color: backgroundColor,
         child: Row(
@@ -1163,7 +1183,6 @@ class DmRecipientHeader extends StatelessWidget {
         .sorted()
         .join(", "));
     } else {
-      // TODO pick string; web has glitchy "You and $yourname"
       title = zulipLocalizations.messageListGroupYouWithYourself;
     }
 
@@ -1371,6 +1390,17 @@ class MessageWithPossibleSender extends StatelessWidget {
       case MessageEditState.none:
     }
 
+    Widget? star;
+    if (message.flags.contains(MessageFlag.starred)) {
+      final starOffset = switch (Directionality.of(context)) {
+        TextDirection.ltr => -2.0,
+        TextDirection.rtl => 2.0,
+      };
+      star = Transform.translate(
+        offset: Offset(starOffset, 0),
+        child: Icon(ZulipIcons.star_filled, size: 16, color: designVariables.star));
+    }
+
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onLongPress: () => showMessageActionSheet(context: context, message: message),
@@ -1402,9 +1432,7 @@ class MessageWithPossibleSender extends StatelessWidget {
                           context, 0.05, baseFontSize: 12))),
                 ])),
               SizedBox(width: 16,
-                child: message.flags.contains(MessageFlag.starred)
-                  ? Icon(ZulipIcons.star_filled, size: 16, color: designVariables.star)
-                  : null),
+                child: star),
             ]),
         ])));
   }

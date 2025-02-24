@@ -160,10 +160,17 @@ class ComposeTopicController extends ComposeController<TopicValidationError> {
     return trimmed.isEmpty ? kNoTopicTopic : trimmed;
   }
 
+  /// Whether [textNormalized] would fail a mandatory-topics check
+  /// (see [mandatory]).
+  ///
+  /// The term "Vacuous" draws distinction from [String.isEmpty], in the sense
+  /// that certain strings are not empty but also indicate the absence of a topic.
+  bool get isTopicVacuous => textNormalized == kNoTopicTopic;
+
   @override
   List<TopicValidationError> _computeValidationErrors() {
     return [
-      if (mandatory && textNormalized == kNoTopicTopic)
+      if (mandatory && isTopicVacuous)
         TopicValidationError.mandatoryButEmpty,
 
       if (
@@ -544,18 +551,15 @@ class _StreamContentInput extends StatefulWidget {
 }
 
 class _StreamContentInputState extends State<_StreamContentInput> {
-  late String _topicTextNormalized;
-
   void _topicChanged() {
     setState(() {
-      _topicTextNormalized = widget.controller.topic.textNormalized;
+      // The relevant state lives on widget.controller.topic itself.
     });
   }
 
   @override
   void initState() {
     super.initState();
-    _topicTextNormalized = widget.controller.topic.textNormalized;
     widget.controller.topic.addListener(_topicChanged);
   }
 
@@ -580,11 +584,17 @@ class _StreamContentInputState extends State<_StreamContentInput> {
     final zulipLocalizations = ZulipLocalizations.of(context);
     final streamName = store.streams[widget.narrow.streamId]?.name
       ?? zulipLocalizations.unknownChannelName;
+    final topic = TopicName(widget.controller.topic.textNormalized);
     return _ContentInput(
       narrow: widget.narrow,
-      destination: TopicNarrow(widget.narrow.streamId, TopicName(_topicTextNormalized)),
+      destination: TopicNarrow(widget.narrow.streamId, topic),
       controller: widget.controller,
-      hintText: zulipLocalizations.composeBoxChannelContentHint(streamName, _topicTextNormalized));
+      hintText: zulipLocalizations.composeBoxChannelContentHint(
+        // No i18n of this use of "#" and ">" string; those are part of how
+        // Zulip expresses channels and topics, not any normal English punctuation,
+        // so don't make sense to translate. See:
+        //   https://github.com/zulip/zulip-flutter/pull/1148#discussion_r1941990585
+        '#$streamName > ${topic.displayName}'));
   }
 }
 
@@ -643,7 +653,11 @@ class _FixedDestinationContentInput extends StatelessWidget {
         final streamName = store.streams[streamId]?.name
           ?? zulipLocalizations.unknownChannelName;
         return zulipLocalizations.composeBoxChannelContentHint(
-          streamName, topic.displayName);
+          // No i18n of this use of "#" and ">" string; those are part of how
+          // Zulip expresses channels and topics, not any normal English punctuation,
+          // so don't make sense to translate. See:
+          //   https://github.com/zulip/zulip-flutter/pull/1148#discussion_r1941990585
+          '#$streamName > ${topic.displayName}');
 
       case DmNarrow(otherRecipientIds: []): // The self-1:1 thread.
         return zulipLocalizations.composeBoxSelfDmContentHint;
@@ -709,7 +723,8 @@ Future<void> _uploadFiles({
 
   if (tooLargeFiles.isNotEmpty) {
     final listMessage = tooLargeFiles
-      .map((file) => '${file.filename}: ${(file.length / (1 << 20)).toStringAsFixed(1)} MiB')
+      .map((file) => zulipLocalizations.filenameAndSizeInMiB(
+        file.filename, (file.length / (1 << 20)).toStringAsFixed(1)))
       .join('\n');
     showErrorDialog(
       context: context,

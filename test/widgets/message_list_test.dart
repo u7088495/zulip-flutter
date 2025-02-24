@@ -12,7 +12,9 @@ import 'package:zulip/api/model/initial_snapshot.dart';
 import 'package:zulip/api/model/model.dart';
 import 'package:zulip/api/model/narrow.dart';
 import 'package:zulip/api/route/messages.dart';
+import 'package:zulip/model/actions.dart';
 import 'package:zulip/model/localizations.dart';
+import 'package:zulip/model/message_list.dart';
 import 'package:zulip/model/narrow.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/model/typing_status.dart';
@@ -55,15 +57,21 @@ void main() {
     List<User>? users,
     List<Subscription>? subscriptions,
     UnreadMessagesSnapshot? unreadMsgs,
+    int? zulipFeatureLevel,
     List<NavigatorObserver> navObservers = const [],
+    bool skipAssertAccountExists = false,
+    bool skipPumpAndSettle = false,
   }) async {
     TypingNotifier.debugEnable = false;
     addTearDown(TypingNotifier.debugReset);
     addTearDown(testBinding.reset);
     streams ??= subscriptions ??= [eg.subscription(eg.stream(streamId: eg.defaultStreamMessageStreamId))];
-    await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot(
+    zulipFeatureLevel ??= eg.recentZulipFeatureLevel;
+    final selfAccount = eg.selfAccount.copyWith(zulipFeatureLevel: zulipFeatureLevel);
+    await testBinding.globalStore.add(selfAccount, eg.initialSnapshot(
+      zulipFeatureLevel: zulipFeatureLevel,
       streams: streams, subscriptions: subscriptions, unreadMsgs: unreadMsgs));
-    store = await testBinding.globalStore.perAccount(eg.selfAccount.id);
+    store = await testBinding.globalStore.perAccount(selfAccount.id);
     connection = store.connection as FakeApiConnection;
 
     // prepare message list data
@@ -76,12 +84,23 @@ void main() {
     connection.prepare(json:
       eg.newestGetMessagesResult(foundOldest: foundOldest, messages: messages).toJson());
 
-    await tester.pumpWidget(TestZulipApp(accountId: eg.selfAccount.id,
+    await tester.pumpWidget(TestZulipApp(accountId: selfAccount.id,
+      skipAssertAccountExists: skipAssertAccountExists,
       navigatorObservers: navObservers,
       child: MessageListPage(initNarrow: narrow)));
 
+    if (skipPumpAndSettle) return;
     // global store, per-account store, and message list get loaded
     await tester.pumpAndSettle();
+  }
+
+  void checkAppBarChannelTopic(String channelName, String topic) {
+    final appBarFinder = find.byType(MessageListAppBarTitle);
+    check(appBarFinder).findsOne();
+    check(find.descendant(of: appBarFinder, matching: find.text(channelName)))
+      .findsOne();
+    check(find.descendant(of: appBarFinder, matching: find.text(topic)))
+      .findsOne();
   }
 
   ScrollController? findMessageListScrollController(WidgetTester tester) {
@@ -129,6 +148,46 @@ void main() {
         messages: [eg.streamMessage(content: "<p>a message</p>")]);
       final state = MessageListPage.ancestorOf(tester.element(find.text("a message")));
       check(state.composeBoxController).isNull();
+    });
+
+    testWidgets('dispose MessageListView when event queue expired', (tester) async {
+      final message = eg.streamMessage();
+      await setupMessageListPage(tester, messages: [message]);
+      final oldViewModel = store.debugMessageListViews.single;
+      final updateMachine = store.updateMachine!;
+      updateMachine.debugPauseLoop();
+      updateMachine.poll();
+
+      updateMachine.debugPrepareLoopError(
+        eg.apiExceptionBadEventQueueId(queueId: updateMachine.queueId));
+      updateMachine.debugAdvanceLoop();
+      await tester.pump();
+      // Event queue has been replaced; but the [MessageList] hasn't been
+      // rebuilt yet.
+      final newStore = testBinding.globalStore.perAccountSync(eg.selfAccount.id)!;
+      check(connection.isOpen).isFalse(); // indicates that the old store has been disposed
+      check(store.debugMessageListViews).single.equals(oldViewModel);
+      check(newStore.debugMessageListViews).isEmpty();
+
+      (newStore.connection as FakeApiConnection).prepare(json: eg.newestGetMessagesResult(
+        foundOldest: true, messages: [message]).toJson());
+      await tester.pump();
+      await tester.pump(Duration.zero);
+      // As [MessageList] rebuilds, the old view model gets disposed and
+      // replaced with a fresh one.
+      check(store.debugMessageListViews).isEmpty();
+      check(newStore.debugMessageListViews).single.not((it) => it.equals(oldViewModel));
+    });
+
+    testWidgets('dispose MessageListView when logged out', (tester) async {
+      await setupMessageListPage(tester,
+        messages: [eg.streamMessage()], skipAssertAccountExists: true);
+      check(store.debugMessageListViews).single;
+
+      final future = logOutAccount(testBinding.globalStore, eg.selfAccount.id);
+      await tester.pump(TestGlobalStore.removeAccountDuration);
+      await future;
+      check(store.debugMessageListViews).isEmpty();
     });
   });
 
@@ -220,6 +279,81 @@ void main() {
 
     await tester.pump(kThemeAnimationDuration * 0.6);
     check(backgroundColor()).isSameColorAs(MessageListTheme.dark.streamMessageBgDefault);
+  });
+
+  group('fetch initial batch of messages', () {
+    group('topic permalink', () {
+      final someStream = eg.stream();
+      const someTopic = 'some topic';
+
+      final otherStream = eg.stream();
+      const otherTopic = 'other topic';
+
+      testWidgets('with message move', (tester) async {
+        final narrow = TopicNarrow(someStream.streamId, eg.t(someTopic), with_: 1);
+        await setupMessageListPage(tester,
+          narrow: narrow,
+          // server sends the /with/<id> message in its current, different location
+          messages: [eg.streamMessage(id: 1, stream: otherStream, topic: otherTopic)],
+          streams: [someStream, otherStream],
+          skipPumpAndSettle: true);
+        await tester.pump(); // global store loaded
+        await tester.pump(); // per-account store loaded
+
+        // Until we learn the conversation was moved,
+        // we put the link's stream/topic in the app bar.
+        checkAppBarChannelTopic(someStream.name, someTopic);
+
+        await tester.pumpAndSettle(); // initial message fetch plus anything else
+
+        // When we learn the conversation was moved,
+        // we put the new stream/topic in the app bar.
+        checkAppBarChannelTopic(otherStream.name, otherTopic);
+
+        // We followed the move in just one fetch.
+        check(connection.takeRequests()).single.isA<http.Request>()
+          ..method.equals('GET')
+          ..url.path.equals('/api/v1/messages')
+          ..url.queryParameters.deepEquals({
+            'narrow': jsonEncode(narrow.apiEncode()),
+            'anchor': AnchorCode.newest.toJson(),
+            'num_before': kMessageListFetchBatchSize.toString(),
+            'num_after': '0',
+          });
+      });
+
+      testWidgets('without message move', (tester) async {
+        final narrow = TopicNarrow(someStream.streamId, eg.t(someTopic), with_: 1);
+        await setupMessageListPage(tester,
+          narrow: narrow,
+          // server sends the /with/<id> message in its current, different location
+          messages: [eg.streamMessage(id: 1, stream: someStream, topic: someTopic)],
+          streams: [someStream],
+          skipPumpAndSettle: true);
+        await tester.pump(); // global store loaded
+        await tester.pump(); // per-account store loaded
+
+        // Until we learn if the conversation was moved,
+        // we put the link's stream/topic in the app bar.
+        checkAppBarChannelTopic(someStream.name, someTopic);
+
+        await tester.pumpAndSettle(); // initial message fetch plus anything else
+
+        // There was no move, so we're still showing the same stream/topic.
+        checkAppBarChannelTopic(someStream.name, someTopic);
+
+        // We only made one fetch.
+        check(connection.takeRequests()).single.isA<http.Request>()
+          ..method.equals('GET')
+          ..url.path.equals('/api/v1/messages')
+          ..url.queryParameters.deepEquals({
+            'narrow': jsonEncode(narrow.apiEncode()),
+            'anchor': AnchorCode.newest.toJson(),
+            'num_before': kMessageListFetchBatchSize.toString(),
+            'num_after': '0',
+          });
+      });
+    });
   });
 
   group('fetch older messages on scroll', () {
@@ -550,15 +684,10 @@ void main() {
           await setupMessageListPage(tester,
             narrow: narrow, messages: [message], unreadMsgs: unreadMsgs);
           check(isMarkAsReadButtonVisible(tester)).isTrue();
-
-          connection.prepare(httpStatus: 400, json: {
-            'code': 'BAD_REQUEST',
-            'msg': 'Invalid message(s)',
-            'result': 'error',
-          });
-
           checkAppearsLoading(tester, false);
 
+          connection.prepare(
+            apiException: eg.apiBadRequest(message: 'Invalid message(s)'));
           await tester.tap(find.byType(MarkAsReadWidget));
           await tester.pump();
           checkAppearsLoading(tester, true);
@@ -649,7 +778,7 @@ void main() {
           narrow: narrow, messages: [message], unreadMsgs: unreadMsgs);
         check(isMarkAsReadButtonVisible(tester)).isTrue();
 
-        connection.prepare(exception: http.ClientException('Oops'));
+        connection.prepare(httpException: http.ClientException('Oops'));
         await tester.tap(find.byType(MarkAsReadWidget));
         await tester.pumpAndSettle();
         checkErrorDialog(tester,
@@ -741,10 +870,7 @@ void main() {
         of: find.byType(RecipientHeader),
         matching: find.text('new topic')).evaluate()
       ).length.equals(1);
-      check(find.descendant(
-        of: find.byType(MessageListAppBarTitle),
-        matching: find.text('new topic')).evaluate()
-      ).length.equals(1);
+      checkAppBarChannelTopic(channel.name, 'new topic');
     });
   });
 
@@ -1062,7 +1188,7 @@ void main() {
         .initNarrow.equals(DmNarrow.withUser(eg.otherUser.userId, selfUserId: eg.selfUser.userId));
       await tester.pumpAndSettle();
     });
-    
+
     testWidgets('does not navigate on tapping recipient header in DmNarrow', (tester) async {
       final pushedRoutes = <Route<void>>[];
       final navObserver = TestNavigatorObserver()

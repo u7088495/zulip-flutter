@@ -80,6 +80,18 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
   String get actionSheetOptionUnfollowTopic => 'Prestať sledovať tému';
 
   @override
+  String get actionSheetOptionResolveTopic => 'Mark as resolved';
+
+  @override
+  String get actionSheetOptionUnresolveTopic => 'Mark as unresolved';
+
+  @override
+  String get errorResolveTopicFailedTitle => 'Failed to mark topic as resolved';
+
+  @override
+  String get errorUnresolveTopicFailedTitle => 'Failed to mark topic as unresolved';
+
+  @override
   String get actionSheetOptionCopyMessageText => 'Skopírovať text správy';
 
   @override
@@ -126,6 +138,11 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
   }
 
   @override
+  String filenameAndSizeInMiB(String filename, String size) {
+    return '$filename: $size MiB';
+  }
+
+  @override
   String errorFilesTooLarge(int num, int maxFileUploadSizeMib, String listMessage) {
     String _temp0 = intl.Intl.pluralLogic(
       num,
@@ -162,7 +179,7 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
   }
 
   @override
-  String get errorLoginCouldNotConnectTitle => 'Nepodarilo sa pripojiť';
+  String get errorCouldNotConnectTitle => 'Could not connect';
 
   @override
   String get errorMessageDoesNotSeemToExist => 'Správa zrejme neexistuje.';
@@ -259,8 +276,8 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
   String get composeBoxSelfDmContentHint => 'Jot down something';
 
   @override
-  String composeBoxChannelContentHint(String channel, String topic) {
-    return 'Message #$channel > $topic';
+  String composeBoxChannelContentHint(String destination) {
+    return 'Message $destination';
   }
 
   @override
@@ -299,7 +316,7 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
   }
 
   @override
-  String get messageListGroupYouWithYourself => 'You with yourself';
+  String get messageListGroupYouWithYourself => 'Messages with yourself';
 
   @override
   String get contentValidationErrorTooLong => 'Message length shouldn\'t be greater than 10000 characters.';
@@ -358,7 +375,7 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
   String get loginAddAnAccountPageTitle => 'Pridať účet';
 
   @override
-  String get loginServerUrlInputLabel => 'Adresa vášho Zulip servera';
+  String get loginServerUrlLabel => 'Adresa vášho Zulip servera';
 
   @override
   String get loginHidePassword => 'Skryť heslo';
@@ -386,6 +403,11 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
 
   @override
   String get topicValidationErrorMandatoryButEmpty => 'Topics are required in this organization.';
+
+  @override
+  String errorInvalidApiKeyMessage(String url) {
+    return 'Your account at $url could not be authenticated. Please try logging in again or use another account.';
+  }
 
   @override
   String get errorInvalidResponse => 'Server poslal nesprávnu odpoveď';
@@ -620,4 +642,10 @@ class ZulipLocalizationsSk extends ZulipLocalizations {
 
   @override
   String get scrollToBottomTooltip => 'Scroll to bottom';
+
+  @override
+  String get appVersionUnknownPlaceholder => '(…)';
+
+  @override
+  String get zulipAppTitle => 'Zulip';
 }

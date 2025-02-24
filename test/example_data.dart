@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:zulip/api/exception.dart';
 import 'package:zulip/api/model/events.dart';
 import 'package:zulip/api/model/initial_snapshot.dart';
 import 'package:zulip/api/model/model.dart';
@@ -18,8 +19,50 @@ void _checkPositive(int? value, String description) {
   assert(value == null || value > 0, '$description should be positive');
 }
 
+////////////////////////////////////////////////////////////////
+// Error objects.
+//
+
 Object nullCheckError() {
   try { null!; } catch (e) { return e; } // ignore: null_check_always_fails
+}
+
+/// A Zulip API error with the generic "BAD_REQUEST" error code.
+///
+/// The server returns this error code for a wide range of error conditions;
+/// it's the default within the server code when no more-specific code is chosen.
+ZulipApiException apiBadRequest({
+    String routeName = 'someRoute', String message = 'Something failed'}) {
+  return ZulipApiException(
+    routeName: routeName,
+    httpStatus: 400, code: 'BAD_REQUEST',
+    data: {}, message: message);
+}
+
+/// The error for the "events" route when the target event queue has been
+/// garbage collected.
+///
+/// https://zulip.com/api/get-events#bad_event_queue_id-errors
+ZulipApiException apiExceptionBadEventQueueId({
+  String queueId = 'fb67bf8a-c031-47cc-84cf-ed80accacda8',
+}) {
+  return ZulipApiException(
+    routeName: 'events', httpStatus: 400, code: 'BAD_EVENT_QUEUE_ID',
+    data: {'queue_id': queueId}, message: 'Bad event queue ID: $queueId');
+}
+
+/// The error the server gives when the client's credentials
+/// (API key together with email and realm URL) are no longer valid.
+///
+/// This isn't really documented, but comes from experiment and from
+/// reading the server implementation.  See:
+///   https://github.com/zulip/zulip-flutter/pull/1183#discussion_r1945865983
+///   https://chat.zulip.org/#narrow/channel/378-api-design/topic/general.20handling.20HTTP.20status.20code.20401/near/2090024
+ZulipApiException apiExceptionUnauthorized({String routeName = 'someRoute'}) {
+  return ZulipApiException(
+    routeName: routeName,
+    httpStatus: 401, code: 'UNAUTHORIZED',
+    data: {}, message: 'Invalid API key');
 }
 
 ////////////////////////////////////////////////////////////////
@@ -289,8 +332,8 @@ Subscription subscription(
 /// Useful in test code that mentions a lot of topics in a compact format.
 TopicName t(String apiName) => TopicName(apiName);
 
-TopicNarrow topicNarrow(int channelId, String topicName) {
-  return TopicNarrow(channelId, TopicName(topicName));
+TopicNarrow topicNarrow(int channelId, String topicName, {int? with_}) {
+  return TopicNarrow(channelId, TopicName(topicName), with_: with_);
 }
 
 UserTopicItem userTopicItem(
@@ -836,6 +879,7 @@ ChannelUpdateEvent channelUpdateEvent(
 TestGlobalStore globalStore({List<Account> accounts = const []}) {
   return TestGlobalStore(accounts: accounts);
 }
+const _globalStore = globalStore;
 
 InitialSnapshot initialSnapshot({
   String? queueId,
@@ -906,10 +950,14 @@ InitialSnapshot initialSnapshot({
 }
 const _initialSnapshot = initialSnapshot;
 
-PerAccountStore store({Account? account, InitialSnapshot? initialSnapshot}) {
+PerAccountStore store({
+  GlobalStore? globalStore,
+  Account? account,
+  InitialSnapshot? initialSnapshot,
+}) {
   final effectiveAccount = account ?? selfAccount;
   return PerAccountStore.fromInitialSnapshot(
-    globalStore: globalStore(accounts: [effectiveAccount]),
+    globalStore: globalStore ?? _globalStore(accounts: [effectiveAccount]),
     accountId: effectiveAccount.id,
     initialSnapshot: initialSnapshot ?? _initialSnapshot(),
   );

@@ -12,9 +12,8 @@ import 'package:zulip/api/model/model.dart';
 import 'package:zulip/api/route/events.dart';
 import 'package:zulip/api/route/messages.dart';
 import 'package:zulip/api/route/realm.dart';
-import 'package:zulip/model/message_list.dart';
-import 'package:zulip/model/narrow.dart';
 import 'package:zulip/log.dart';
+import 'package:zulip/model/actions.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/notifications/receive.dart';
 
@@ -121,6 +120,29 @@ void main() {
     check(await globalStore.perAccount(1)).identicalTo(store1);
     check(completers(1)).length.equals(1);
   });
+
+  test('GlobalStore.perAccount loading fails with HTTP status code 401', () => awaitFakeAsync((async) async {
+    final globalStore = LoadingTestGlobalStore(accounts: [eg.selfAccount]);
+    final future = globalStore.perAccount(eg.selfAccount.id);
+
+    globalStore.completers[eg.selfAccount.id]!
+      .single.completeError(eg.apiExceptionUnauthorized());
+    await check(future).throws<AccountNotFoundException>();
+  }));
+
+  test('GlobalStore.perAccount account is logged out while loading; then fails with HTTP status code 401', () => awaitFakeAsync((async) async {
+    final globalStore = LoadingTestGlobalStore(accounts: [eg.selfAccount]);
+    final future = globalStore.perAccount(eg.selfAccount.id);
+
+    await logOutAccount(globalStore, eg.selfAccount.id);
+    check(globalStore.takeDoRemoveAccountCalls())
+      .single.equals(eg.selfAccount.id);
+
+    globalStore.completers[eg.selfAccount.id]!
+      .single.completeError(eg.apiExceptionUnauthorized());
+    await check(future).throws<AccountNotFoundException>();
+    check(globalStore.takeDoRemoveAccountCalls()).isEmpty();
+  }));
 
   // TODO test insertAccount
 
@@ -475,7 +497,7 @@ void main() {
 
       // Try to load, inducing an error in the request.
       globalStore.useCachedApiConnections = true;
-      connection.prepare(exception: Exception('failed'));
+      connection.prepare(httpException: Exception('failed'));
       final future = UpdateMachine.load(globalStore, eg.selfAccount.id);
       bool complete = false;
       unawaited(future.whenComplete(() => complete = true));
@@ -543,7 +565,7 @@ void main() {
       check(store.debugServerEmojiData).isNull();
 
       // Try to fetch, inducing an error in the request.
-      connection.prepare(exception: Exception('failed'));
+      connection.prepare(httpException: Exception('failed'));
       final future = updateMachine.fetchEmojiData(emojiDataUrl);
       bool complete = false;
       unawaited(future.whenComplete(() => complete = true));
@@ -714,11 +736,11 @@ void main() {
     }
 
     void prepareNetworkExceptionSocketException() {
-      connection.prepare(exception: const SocketException('failed'));
+      connection.prepare(httpException: const SocketException('failed'));
     }
 
     void prepareNetworkException() {
-      connection.prepare(exception: Exception("failed"));
+      connection.prepare(httpException: Exception("failed"));
     }
 
     void prepareServer5xxException() {
@@ -759,11 +781,8 @@ void main() {
     }
 
     void prepareExpiredEventQueue() {
-      connection.prepare(httpStatus: 400, json: {
-        'result': 'error', 'code': 'BAD_EVENT_QUEUE_ID',
-        'queue_id': updateMachine.queueId,
-        'msg': 'Bad event queue ID: ${updateMachine.queueId}',
-      });
+      connection.prepare(apiException: eg.apiExceptionBadEventQueueId(
+        queueId: updateMachine.queueId));
     }
 
     Future<void> prepareHandleEventError() async {
@@ -823,25 +842,6 @@ void main() {
     test('reloads on handleEvent error', () {
       checkReload(prepareHandleEventError);
     });
-
-    test('expired queue disposes registered MessageListView instances', () => awaitFakeAsync((async) async {
-      // Regression test for: https://github.com/zulip/zulip-flutter/issues/810
-      await preparePoll();
-
-      // Make sure there are [MessageListView]s in the message store.
-      MessageListView.init(store: store, narrow: const MentionsNarrow());
-      MessageListView.init(store: store, narrow: const StarredMessagesNarrow());
-      check(store.debugMessageListViews).length.equals(2);
-
-      // Let the server expire the event queue.
-      prepareExpiredEventQueue();
-      updateMachine.debugAdvanceLoop();
-      async.elapse(Duration.zero);
-
-      // The old store's [MessageListView]s have been disposed.
-      // (And no exception was thrown; that was #810.)
-      check(store.debugMessageListViews).isEmpty();
-    }));
 
     group('report error', () {
       String? lastReportedError;
@@ -991,6 +991,73 @@ void main() {
         ));
       });
     });
+  });
+
+  group('UpdateMachine.poll reload failure', () {
+    late LoadingTestGlobalStore globalStore;
+
+    List<Completer<PerAccountStore>> completers() =>
+      globalStore.completers[eg.selfAccount.id]!;
+
+    Future<void> prepareReload(FakeAsync async) async {
+      globalStore = LoadingTestGlobalStore(accounts: [eg.selfAccount]);
+      final future = globalStore.perAccount(eg.selfAccount.id);
+      final store = eg.store(globalStore: globalStore, account: eg.selfAccount);
+      completers().single.complete(store);
+      await future;
+      completers().clear();
+      final updateMachine = globalStore.updateMachines[eg.selfAccount.id] =
+        UpdateMachine.fromInitialSnapshot(
+          store: store, initialSnapshot: eg.initialSnapshot());
+      updateMachine.debugPauseLoop();
+      updateMachine.poll();
+
+      (store.connection as FakeApiConnection).prepare(
+        apiException: eg.apiExceptionBadEventQueueId());
+      updateMachine.debugAdvanceLoop();
+      async.elapse(Duration.zero);
+      check(store).isLoading.isTrue();
+    }
+
+    void checkReloadFailure({
+      required FutureOr<void> Function() completeLoading,
+    }) {
+      awaitFakeAsync((async) async {
+        await prepareReload(async);
+        check(completers()).single.isCompleted.isFalse();
+
+        await completeLoading();
+        check(completers()).single.isCompleted.isTrue();
+        check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+
+        async.elapse(TestGlobalStore.removeAccountDuration);
+        check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
+
+        async.flushTimers();
+        // Reload never succeeds and there are no unhandled errors.
+        check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
+      });
+    }
+
+    Future<void> logOutAndCompleteWithNewStore() async {
+      // [PerAccountStore.fromInitialSnapshot] requires the account
+      // to be in the global store when called; do so before logging out.
+      final newStore = eg.store(globalStore: globalStore, account: eg.selfAccount);
+      await logOutAccount(globalStore, eg.selfAccount.id);
+      completers().single.complete(newStore);
+    }
+
+    test('user logged out before new store is loaded', () => awaitFakeAsync((async) async {
+      checkReloadFailure(completeLoading: logOutAndCompleteWithNewStore);
+    }));
+
+    void completeWithApiExceptionUnauthorized() {
+      completers().single.completeError(eg.apiExceptionUnauthorized());
+    }
+
+    test('new store is not loaded, gets HTTP 401 error instead', () => awaitFakeAsync((async) async {
+      checkReloadFailure(completeLoading: completeWithApiExceptionUnauthorized);
+    }));
   });
 
   group('UpdateMachine.registerNotificationToken', () {
