@@ -13,6 +13,9 @@ Stream<LicenseEntry> additionalLicenses() async* {
   // Alphabetic by path.
 
   yield LicenseEntryWithLineBreaks(
+    ['KaTeX'],
+    await rootBundle.loadString('assets/KaTeX/LICENSE'));
+  yield LicenseEntryWithLineBreaks(
     ['Noto Color Emoji'],
     await rootBundle.loadString('assets/Noto_Color_Emoji/LICENSE'));
   yield LicenseEntryWithLineBreaks(
@@ -23,6 +26,12 @@ Stream<LicenseEntry> additionalLicenses() async* {
         rootBundle.loadString('assets/Pygments/AUTHORS.txt'),
       ]);
 
+      // This does not need to be translated, as it is just a small fragment
+      // of text surrounded by a large quantity of English text that isn't
+      // translated anyway.
+      // (And it would be logistically tricky to translate, as this code is
+      // called from the `main` function before the [ZulipApp] widget is built,
+      // let alone has updated [GlobalLocalizations].)
       return '$licenseFileText\n\nAUTHORS file follows:\n\n$authorsFileText';
     }());
   yield LicenseEntryWithLineBreaks(

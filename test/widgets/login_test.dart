@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:zulip/api/core.dart';
 import 'package:zulip/api/model/web_auth.dart';
 import 'package:zulip/api/route/account.dart';
 import 'package:zulip/api/route/realm.dart';
@@ -17,13 +18,14 @@ import 'package:zulip/widgets/login.dart';
 import 'package:zulip/widgets/page.dart';
 
 import '../api/fake_api.dart';
+import '../api/route/route_checks.dart';
 import '../example_data.dart' as eg;
 import '../model/binding.dart';
 import '../stdlib_checks.dart';
 import '../test_images.dart';
 import '../test_navigation.dart';
 import 'dialog_checks.dart';
-import 'page_checks.dart';
+import 'checks.dart';
 
 void main() {
   TestZulipBinding.ensureInitialized();
@@ -65,7 +67,114 @@ void main() {
     expectErrorFromText('email@example.com', ServerUrlValidationError.noUseEmail);
   });
 
-  // TODO test AddAccountPage
+  group('AddAccountPage', () {
+    late FakeApiConnection connection;
+    List<Route<dynamic>> pushedRoutes = [];
+    List<Route<dynamic>> poppedRoutes = [];
+
+    List<Route<dynamic>> takePushedRoutes() {
+      final routes = pushedRoutes.toList();
+      pushedRoutes.clear();
+      return routes;
+    }
+
+    Future<void> prepare(WidgetTester tester) async {
+      addTearDown(testBinding.reset);
+
+      pushedRoutes = [];
+      poppedRoutes = [];
+      final testNavObserver = TestNavigatorObserver();
+      testNavObserver.onPushed = (route, prevRoute) => pushedRoutes.add(route);
+      testNavObserver.onPopped = (route, prevRoute) => poppedRoutes.add(route);
+      testNavObserver.onReplaced = (route, prevRoute) {
+        poppedRoutes.add(prevRoute!);
+        pushedRoutes.add(route!);
+      };
+
+      await tester.pumpWidget(ZulipApp(navigatorObservers: [testNavObserver]));
+      await tester.pump();
+      check(takePushedRoutes()).single.isA<WidgetRoute>().page.isA<ChooseAccountPage>();
+      await tester.tap(find.text('Add an account'));
+      check(takePushedRoutes()).single.isA<WidgetRoute>().page.isA<AddAccountPage>();
+      await testNavObserver.pumpPastTransition(tester);
+    }
+
+    Future<void> attempt(WidgetTester tester,
+        Uri realmUrl, Map<String, Object?> responseJson) async {
+      await tester.enterText(find.byType(TextField), realmUrl.toString());
+      testBinding.globalStore.useCachedApiConnections = true;
+      connection = testBinding.globalStore.apiConnection(
+        realmUrl: realmUrl,
+        zulipFeatureLevel: null);
+      connection.prepare(json: responseJson);
+      await tester.tap(find.text('Continue'));
+      await tester.pump(Duration.zero);
+    }
+
+    testWidgets('happy path', (tester) async {
+      await prepare(tester);
+
+      final serverSettings = eg.serverSettings();
+
+      await attempt(tester, serverSettings.realmUrl, serverSettings.toJson());
+      checkNoDialog(tester);
+      check(takePushedRoutes()).single.isA<WidgetRoute>().page.isA<LoginPage>()
+        .serverSettings.realmUrl.equals(serverSettings.realmUrl);
+    });
+
+    testWidgets('Server too old, well-formed response', (tester) async {
+      await prepare(tester);
+
+      final serverSettings = eg.serverSettings(
+        zulipFeatureLevel: 1, zulipVersion: '3.0');
+
+      await attempt(tester, serverSettings.realmUrl, serverSettings.toJson());
+      checkErrorDialog(tester,
+        expectedTitle: 'Could not connect',
+        expectedMessage: '${serverSettings.realmUrl} is running Zulip Server 3.0, which is unsupported. The minimum supported version is Zulip Server $kMinSupportedZulipVersion.');
+      // i.e., not the login route
+      check(takePushedRoutes()).single.isA<DialogRoute<void>>();
+    });
+
+    testWidgets('Server too old, malformed response', (tester) async {
+      await prepare(tester);
+
+      final serverSettings = eg.serverSettings(
+        zulipFeatureLevel: 1, zulipVersion: '3.0');
+      final serverSettingsMalformedJson =
+        serverSettings.toJson()..['push_notifications_enabled'] = 'abcd';
+      check(() => GetServerSettingsResult.fromJson(serverSettingsMalformedJson))
+        .throws<void>();
+
+      await attempt(tester, serverSettings.realmUrl, serverSettingsMalformedJson);
+      checkErrorDialog(tester,
+        expectedTitle: 'Could not connect',
+        expectedMessage: '${serverSettings.realmUrl} is running Zulip Server 3.0, which is unsupported. The minimum supported version is Zulip Server $kMinSupportedZulipVersion.');
+      // i.e., not the login route
+      check(takePushedRoutes()).single.isA<DialogRoute<void>>();
+    });
+
+    testWidgets('Malformed response, server not too old', (tester) async {
+      await prepare(tester);
+
+      final serverSettings = eg.serverSettings(
+        zulipVersion: eg.recentZulipVersion,
+        zulipFeatureLevel: eg.recentZulipFeatureLevel);
+      final serverSettingsMalformedJson =
+        serverSettings.toJson()..['push_notifications_enabled'] = 'abcd';
+      check(() => GetServerSettingsResult.fromJson(serverSettingsMalformedJson))
+        .throws<void>();
+
+      await attempt(tester, serverSettings.realmUrl, serverSettingsMalformedJson);
+      checkErrorDialog(tester,
+        expectedTitle: 'Could not connect',
+        expectedMessage: 'Failed to connect to server:\n${serverSettings.realmUrl}');
+      // i.e., not the login route
+      check(takePushedRoutes()).single.isA<DialogRoute<void>>();
+    });
+
+    // TODO other errors
+  });
 
   group('LoginPage', () {
     late FakeApiConnection connection;

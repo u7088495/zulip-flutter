@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:zulip/generated/l10n/zulip_localizations.dart';
+import 'package:zulip/widgets/page.dart';
 import 'package:zulip/widgets/store.dart';
 import 'package:zulip/widgets/theme.dart';
 
@@ -72,14 +73,16 @@ class TestZulipApp extends StatelessWidget {
         title: 'Zulip',
         localizationsDelegates: ZulipLocalizations.localizationsDelegates,
         supportedLocales: ZulipLocalizations.supportedLocales,
+        // The context has to be taken from the [Builder] because
+        // [zulipThemeData] requires access to [GlobalStoreWidget] in the tree.
         theme: zulipThemeData(context),
 
         navigatorObservers: navigatorObservers ?? const [],
 
         home: accountId != null
-          ? PerAccountStoreWidget(accountId: accountId!, child: child)
-          : child,
-      );
+          ? PerAccountStoreWidget(accountId: accountId!,
+              child: PageRoot(child: child))
+          : PageRoot(child: child));
     }));
   }
 }

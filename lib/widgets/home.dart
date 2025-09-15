@@ -8,8 +8,8 @@ import 'about_zulip.dart';
 import 'action_sheet.dart';
 import 'app.dart';
 import 'app_bar.dart';
+import 'button.dart';
 import 'color.dart';
-import 'content.dart';
 import 'icons.dart';
 import 'inbox.dart';
 import 'inset_shadow.dart';
@@ -17,10 +17,12 @@ import 'message_list.dart';
 import 'page.dart';
 import 'profile.dart';
 import 'recent_dm_conversations.dart';
+import 'settings.dart';
 import 'store.dart';
 import 'subscription_list.dart';
 import 'text.dart';
 import 'theme.dart';
+import 'user.dart';
 
 enum _HomePageTab {
   inbox,
@@ -31,7 +33,7 @@ enum _HomePageTab {
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
-  static Route<void> buildRoute({required int accountId}) {
+  static AccountRoute<void> buildRoute({required int accountId}) {
     return MaterialAccountWidgetRoute(accountId: accountId,
       loadingPlaceholderPage: _LoadingPlaceholderPage(accountId: accountId),
       page: const HomePage());
@@ -109,7 +111,7 @@ class _HomePageState extends State<HomePage> {
             narrow: const CombinedFeedNarrow()))),
       button(_HomePageTab.channels,       ZulipIcons.hash_italic),
       // TODO(#1094): Users
-      button(_HomePageTab.directMessages, ZulipIcons.user),
+      button(_HomePageTab.directMessages, ZulipIcons.two_person),
       _NavigationBarButton(         icon: ZulipIcons.menu,
         selected: false,
         onPressed: () => _showMainMenu(context, tabNotifier: _tab)),
@@ -212,7 +214,8 @@ class _LoadingPlaceholderPageState extends State<_LoadingPlaceholderPage> {
                 child: Column(
                   children: [
                     const SizedBox(height: 16),
-                    Text(zulipLocalizations.tryAnotherAccountMessage(account.realmUrl.toString())),
+                    Text(textAlign: TextAlign.center,
+                      zulipLocalizations.tryAnotherAccountMessage(account.realmUrl.toString())),
                     const SizedBox(height: 8),
                     ElevatedButton(
                       onPressed: () => Navigator.push(context,
@@ -264,7 +267,7 @@ void _showMainMenu(BuildContext context, {
   required ValueNotifier<_HomePageTab> tabNotifier,
 }) {
   final menuItems = <Widget>[
-    // TODO(#252): Search
+    const _SearchButton(),
     // const SizedBox(height: 8),
     _InboxButton(tabNotifier: tabNotifier),
     // TODO: Recent conversations
@@ -279,7 +282,7 @@ void _showMainMenu(BuildContext context, {
     const _SwitchAccountButton(),
     // TODO(#198): Set my status
     // const SizedBox(height: 8),
-    // TODO(#97): Settings
+    const _SettingsButton(),
     // TODO(#661): Notifications
     // const SizedBox(height: 8),
     const _AboutZulipButton(),
@@ -321,7 +324,8 @@ void _showMainMenu(BuildContext context, {
                 child: AnimatedScaleOnTap(
                   scaleEnd: 0.95,
                   duration: Duration(milliseconds: 100),
-                  child: ActionSheetCancelButton())),
+                  child: BottomSheetDismissButton(
+                    style: BottomSheetDismissButtonStyle.close))),
             ])));
     });
 }
@@ -424,6 +428,24 @@ abstract class _NavigationBarMenuButton extends _MenuButton {
   }
 }
 
+class _SearchButton extends _MenuButton {
+  const _SearchButton();
+
+  @override
+  IconData get icon => ZulipIcons.search;
+
+  @override
+  String label(ZulipLocalizations zulipLocalizations) {
+    return zulipLocalizations.searchMessagesPageTitle;
+  }
+
+  @override
+  void onPressed(BuildContext context) {
+    Navigator.of(context).push(MessageListPage.buildRoute(
+      context: context, narrow: KeywordSearchNarrow('')));
+  }
+}
+
 class _InboxButton extends _NavigationBarMenuButton {
   const _InboxButton({required super.tabNotifier});
 
@@ -512,7 +534,7 @@ class _DirectMessagesButton extends _NavigationBarMenuButton {
   const _DirectMessagesButton({required super.tabNotifier});
 
   @override
-  IconData get icon => ZulipIcons.user;
+  IconData get icon => ZulipIcons.two_person;
 
   @override
   String label(ZulipLocalizations zulipLocalizations) {
@@ -533,7 +555,11 @@ class _MyProfileButton extends _MenuButton {
   Widget buildLeading(BuildContext context) {
     final store = PerAccountStoreWidget.of(context);
     return Avatar(
-      userId: store.selfUserId, size: _MenuButton._iconSize, borderRadius: 4);
+      userId: store.selfUserId,
+      size: _MenuButton._iconSize,
+      borderRadius: 4,
+      showPresence: false,
+    );
   }
 
   @override
@@ -553,11 +579,7 @@ class _SwitchAccountButton extends _MenuButton {
   const _SwitchAccountButton();
 
   @override
-  // TODO(design): choose an icon
-  IconData? get icon => null;
-
-  @override
-  Widget buildLeading(BuildContext context) => const SizedBox.shrink();
+  IconData? get icon => ZulipIcons.arrow_left_right;
 
   @override
   String label(ZulipLocalizations zulipLocalizations) {
@@ -567,6 +589,23 @@ class _SwitchAccountButton extends _MenuButton {
   @override
   void onPressed(BuildContext context) {
     Navigator.of(context).push(MaterialWidgetRoute(page: const ChooseAccountPage()));
+  }
+}
+
+class _SettingsButton extends _MenuButton {
+  const _SettingsButton();
+
+  @override
+  IconData get icon => ZulipIcons.settings;
+
+  @override
+  String label(ZulipLocalizations zulipLocalizations) {
+    return zulipLocalizations.settingsPageTitle;
+  }
+
+  @override
+  void onPressed(BuildContext context) {
+    Navigator.of(context).push(SettingsPage.buildRoute(context: context));
   }
 }
 
@@ -584,51 +623,5 @@ class _AboutZulipButton extends _MenuButton {
   @override
   void onPressed(BuildContext context) {
     Navigator.of(context).push(AboutZulipPage.buildRoute(context));
-  }
-}
-
-/// Apply [Transform.scale] to the child widget when tapped, and reset its scale
-/// when released, while animating the transitions.
-class AnimatedScaleOnTap extends StatefulWidget {
-  const AnimatedScaleOnTap({
-    super.key,
-    required this.scaleEnd,
-    required this.duration,
-    required this.child,
-  });
-
-  /// The terminal scale to animate to.
-  final double scaleEnd;
-
-  /// The duration over which to animate the scale change.
-  final Duration duration;
-
-  final Widget child;
-
-  @override
-  State<AnimatedScaleOnTap> createState() => _AnimatedScaleOnTapState();
-}
-
-class _AnimatedScaleOnTapState extends State<AnimatedScaleOnTap> {
-  double _scale = 1;
-
-  void _changeScale(double scale) {
-    setState(() {
-      _scale = scale;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      onTapDown: (_) =>  _changeScale(widget.scaleEnd),
-      onTapUp: (_) =>    _changeScale(1),
-      onTapCancel: () => _changeScale(1),
-      child: AnimatedScale(
-        scale: _scale,
-        duration: widget.duration,
-        curve: Curves.easeOut,
-        child: widget.child));
   }
 }

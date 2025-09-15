@@ -9,6 +9,7 @@ import 'package:zulip/widgets/color.dart';
 import 'package:zulip/widgets/home.dart';
 import 'package:zulip/widgets/icons.dart';
 import 'package:zulip/widgets/channel_colors.dart';
+import 'package:zulip/widgets/unread_count_badge.dart';
 
 import '../example_data.dart' as eg;
 import '../flutter_checks.dart';
@@ -58,6 +59,7 @@ void main() {
     List<Subscription>? subscriptions,
     List<User>? users,
     required List<Message> unreadMessages,
+    List<Message>? otherMessages,
     NavigatorObserver? navigatorObserver,
   }) async {
     addTearDown(testBinding.reset);
@@ -70,7 +72,7 @@ void main() {
 
     for (final message in unreadMessages) {
       assert(!message.flags.contains(MessageFlag.read));
-      await store.handleEvent(MessageEvent(id: 1, message: message));
+      await store.addMessage(message);
     }
 
     await tester.pumpWidget(TestZulipApp(
@@ -196,6 +198,7 @@ void main() {
   group('InboxPage', () {
     testWidgets('page builds; empty', (tester) async {
       await setupPage(tester, unreadMessages: []);
+      check(find.textContaining('There are no unread messages in your inbox.')).findsOne();
     });
 
     // TODO more checks: ordering, etc.
@@ -226,7 +229,7 @@ void main() {
           streams: [stream],
           subscriptions: [subscription],
           unreadMessages: [eg.streamMessage(stream: stream, topic: 'lunch')]);
-        await store.addUserTopic(stream, 'lunch', UserTopicVisibilityPolicy.muted);
+        await store.setUserTopic(stream, 'lunch', UserTopicVisibilityPolicy.muted);
         await tester.pump();
         check(tester.widgetList(find.text('lunch'))).length.equals(0);
       });
@@ -248,7 +251,7 @@ void main() {
           streams: [stream],
           subscriptions: [subscription],
           unreadMessages: [eg.streamMessage(stream: stream, topic: 'lunch')]);
-        await store.addUserTopic(stream, 'lunch', UserTopicVisibilityPolicy.unmuted);
+        await store.setUserTopic(stream, 'lunch', UserTopicVisibilityPolicy.unmuted);
         await tester.pump();
         check(tester.widgetList(find.text('lunch'))).length.equals(1);
       });
@@ -307,6 +310,15 @@ void main() {
       });
     });
 
+    testWidgets('empty topic', (tester) async {
+      final channel = eg.stream();
+      await setupPage(tester,
+        streams: [channel],
+        subscriptions: [(eg.subscription(channel))],
+        unreadMessages: [eg.streamMessage(stream: channel, topic: '')]);
+      check(find.text(eg.defaultRealmEmptyTopicDisplayName)).findsOne();
+    });
+
     group('topic visibility', () {
       final channel = eg.stream();
       const topic = 'topic';
@@ -317,7 +329,7 @@ void main() {
           streams: [channel],
           subscriptions: [eg.subscription(channel)],
           unreadMessages: [message]);
-        await store.addUserTopic(channel, topic, UserTopicVisibilityPolicy.followed);
+        await store.setUserTopic(channel, topic, UserTopicVisibilityPolicy.followed);
         await tester.pump();
         check(hasIcon(tester,
           parent: findRowByLabel(tester, topic),
@@ -330,7 +342,7 @@ void main() {
           subscriptions: [eg.subscription(channel)],
           unreadMessages: [eg.streamMessage(stream: channel, topic: topic,
             flags: [MessageFlag.mentioned])]);
-        await store.addUserTopic(channel, topic, UserTopicVisibilityPolicy.followed);
+        await store.setUserTopic(channel, topic, UserTopicVisibilityPolicy.followed);
         await tester.pump();
         check(hasIcon(tester,
           parent: findRowByLabel(tester, topic),
@@ -346,11 +358,44 @@ void main() {
           streams: [channel],
           subscriptions: [eg.subscription(channel, isMuted: true)],
           unreadMessages: [message]);
-        await store.addUserTopic(channel, topic, UserTopicVisibilityPolicy.unmuted);
+        await store.setUserTopic(channel, topic, UserTopicVisibilityPolicy.unmuted);
         await tester.pump();
         check(hasIcon(tester,
           parent: findRowByLabel(tester, topic),
           icon: ZulipIcons.unmute)).isTrue();
+      });
+
+      testWidgets('unmuted (topics treated case-insensitively)', (tester) async {
+        // Case-insensitivity of both topic-visibility and unreads data
+        // TODO(#1065) this belongs in test/model/ once the inbox page has
+        //   its own view-model
+
+        final message1 = eg.streamMessage(stream: channel, topic: 'aaa');
+        final message2 = eg.streamMessage(stream: channel, topic: 'AaA', flags: [MessageFlag.read]);
+        final message3 = eg.streamMessage(stream: channel, topic: 'aAa', flags: [MessageFlag.read]);
+        await setupPage(tester,
+          users: [eg.selfUser, eg.otherUser],
+          streams: [channel],
+          subscriptions: [eg.subscription(channel, isMuted: true)],
+          unreadMessages: [message1]);
+        await store.setUserTopic(channel, 'aaa', UserTopicVisibilityPolicy.unmuted);
+        await tester.pump();
+
+        check(find.descendant(
+          of: find.byWidget(findRowByLabel(tester, 'aaa')!),
+          matching: find.widgetWithText(UnreadCountBadge, '1'))).findsOne();
+
+        await store.handleEvent(eg.updateMessageFlagsRemoveEvent(MessageFlag.read, [message2]));
+        await tester.pump();
+        check(find.descendant(
+          of: find.byWidget(findRowByLabel(tester, 'aaa')!),
+          matching: find.widgetWithText(UnreadCountBadge, '2'))).findsOne();
+
+        await store.handleEvent(eg.updateMessageFlagsRemoveEvent(MessageFlag.read, [message3]));
+        await tester.pump();
+        check(find.descendant(
+          of: find.byWidget(findRowByLabel(tester, 'aaa')!),
+          matching: find.widgetWithText(UnreadCountBadge, '3'))).findsOne();
       });
     });
 

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../model/binding.dart';
+import '../model/database.dart';
+import '../model/settings.dart';
 import '../model/store.dart';
 import 'page.dart';
 
@@ -16,9 +18,17 @@ import 'page.dart';
 class GlobalStoreWidget extends StatefulWidget {
   const GlobalStoreWidget({
     super.key,
-    this.placeholder = const LoadingPlaceholder(),
+    this.blockingFuture,
+    this.placeholder = const BlankLoadingPlaceholder(),
     required this.child,
   });
+
+  /// An additional future to await before showing the child.
+  ///
+  /// If [blockingFuture] is non-null, then this widget will build [child]
+  /// only after the future completes.  This widget's behavior is not affected
+  /// by whether the future's completion is with a value or with an error.
+  final Future<void>? blockingFuture;
 
   final Widget placeholder;
   final Widget child;
@@ -51,6 +61,28 @@ class GlobalStoreWidget extends StatefulWidget {
     return widget!.store;
   }
 
+  /// The user's [GlobalSettings] data within the app's global data store.
+  ///
+  /// The given build context will be registered as a dependency and
+  /// subscribed to changes in the returned [GlobalSettingsStore].
+  /// This means that when the setting values in the store change,
+  /// the element at that build context will be rebuilt.
+  ///
+  /// This method is typically called near the top of a build method or a
+  /// [State.didChangeDependencies] method, like so:
+  /// ```
+  ///   @override
+  ///   Widget build(BuildContext context) {
+  ///     final globalSettings = GlobalStoreWidget.settingsOf(context);
+  /// ```
+  ///
+  /// See [of] for further discussion of how to use this kind of method.
+  static GlobalSettingsStore settingsOf(BuildContext context) {
+    final widget = context.dependOnInheritedWidgetOfExactType<_GlobalSettingsStoreInheritedWidget>();
+    assert(widget != null, 'No GlobalStoreWidget ancestor');
+    return widget!.store;
+  }
+
   @override
   State<GlobalStoreWidget> createState() => _GlobalStoreWidgetState();
 }
@@ -63,6 +95,9 @@ class _GlobalStoreWidgetState extends State<GlobalStoreWidget> {
     super.initState();
     (() async {
       final store = await ZulipBinding.instance.getGlobalStoreUniquely();
+      if (widget.blockingFuture != null) {
+        await widget.blockingFuture!.catchError((_) {});
+      }
       setState(() {
         this.store = store;
       });
@@ -81,16 +116,26 @@ class _GlobalStoreWidgetState extends State<GlobalStoreWidget> {
 // a [StatefulWidget] to get hold of the store, and an [InheritedWidget] to
 // provide it to descendants, and one widget can't be both of those.
 class _GlobalStoreInheritedWidget extends InheritedNotifier<GlobalStore> {
-  const _GlobalStoreInheritedWidget({
+  _GlobalStoreInheritedWidget({
     required GlobalStore store,
+    required Widget child,
+  }) : super(notifier: store,
+         child: _GlobalSettingsStoreInheritedWidget(
+           store: store.settings, child: child));
+
+  GlobalStore get store => notifier!;
+}
+
+// This is like [_GlobalStoreInheritedWidget] except it subscribes to the
+// [GlobalSettingsStore] instead of the overall [GlobalStore].
+// That enables [settingsOf] to do the same.
+class _GlobalSettingsStoreInheritedWidget extends InheritedNotifier<GlobalSettingsStore> {
+  const _GlobalSettingsStoreInheritedWidget({
+    required GlobalSettingsStore store,
     required super.child,
   }) : super(notifier: store);
 
-  GlobalStore get store => notifier!;
-
-  @override
-  bool updateShouldNotify(covariant _GlobalStoreInheritedWidget oldWidget) =>
-    store != oldWidget.store;
+  GlobalSettingsStore get store => notifier!;
 }
 
 /// Provides access to the user's data for a particular Zulip account.
@@ -294,6 +339,15 @@ class _PerAccountStoreInheritedWidget extends InheritedNotifier<PerAccountStore>
   @override
   bool updateShouldNotify(covariant _PerAccountStoreInheritedWidget oldWidget) =>
     store != oldWidget.store;
+}
+
+class BlankLoadingPlaceholder extends StatelessWidget {
+  const BlankLoadingPlaceholder({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox.shrink();
+  }
 }
 
 class LoadingPlaceholder extends StatelessWidget {

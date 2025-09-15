@@ -18,6 +18,9 @@ set -euo pipefail
 
 this_dir=${BASH_SOURCE[0]%/*}
 
+# shellcheck source=tools/lib/ensure-coreutils.sh
+. "${this_dir}"/lib/ensure-coreutils.sh
+
 # shellcheck source=tools/lib/git.sh
 . "${this_dir}"/lib/git.sh
 
@@ -258,7 +261,7 @@ run_flutter_version() {
              # If we find cases where it fails, we can study
              # how the `flutter` tool actually decides the version name.
              <^(\d+\.\d+\.\d+-) (\d+) (\.\d+\.pre) -(\d+) -g[0-9a-f]+$>
-             <$1 . ($2 + 1) . $3 . "." . $4>xe)'
+             <$1 . ($2 + 1) . $3 . "-" . $4>xe)'
     ) || return
     if [ -z "${predicted_version}" ]; then
         cat >&2 <<EOF
@@ -268,13 +271,19 @@ EOF
         return 1
     fi
     if [ "${flutter_version}" != "${predicted_version}" ]; then
-        cat >&2 <<EOF
+        # Before 2025-07 (https://github.com/flutter/flutter/pull/172141),
+        # the version name ended like ".123" instead of "-123".
+        local alternate_predicted_version;
+        alternate_predicted_version="${predicted_version%-*}.${predicted_version##*-}"
+        if [ "${flutter_version}" != "${alternate_predicted_version}" ]; then
+            cat >&2 <<EOF
 error: Flutter commit in pubspec.yaml seems to differ from version bound
 Commit ${flutter_commit} was described as: ${commit_described}
 We therefore expect the Flutter version name to be: ${predicted_version}
 But the Flutter version bound in pubspec.yaml is: ${flutter_version}
 EOF
-        return 1
+            return 1
+        fi
     fi
 
     # Check the commit is an acceptable commit.
@@ -378,13 +387,15 @@ run_l10n() {
 
 run_drift() {
     local schema_dir=test/model/schemas/
+    local migration_helper_path=lib/model/schema_versions.g.dart
+    local outputs=( "${schema_dir}" "${migration_helper_path}" )
 
     # Omitted from this check:
     #   pubspec.{yaml,lock} tools/check
-    files_check lib/model/database{,.g}.dart "${schema_dir}" \
+    files_check lib/model/database{,.g}.dart "${outputs[@]}" \
     || return 0
 
-    check_no_uncommitted_or_untracked "${schema_dir}" \
+    check_no_uncommitted_or_untracked "${outputs[@]}" \
     || return
 
     dart run drift_dev schema dump \
@@ -393,8 +404,11 @@ run_drift() {
     dart run drift_dev schema generate --data-classes --companions \
         "${schema_dir}" "${schema_dir}" \
     || return
+    dart run drift_dev schema steps \
+        "${schema_dir}" "${migration_helper_path}" \
+    || return
 
-    check_no_changes "schema updates" "${schema_dir}"
+    check_no_changes "schema or migration-helper updates" "${outputs[@]}"
 }
 
 filter_flutter_pub_run_output() {
@@ -418,6 +432,7 @@ run_pigeon() {
     local outputs=(
         lib/host/'*'.g.dart
         android/'*'.g.kt
+        ios/'*'.g.swift
     )
 
     # Omitted from this check:

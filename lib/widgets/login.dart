@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../api/core.dart';
 import '../api/exception.dart';
 import '../api/model/web_auth.dart';
 import '../api/route/account.dart';
@@ -13,6 +14,7 @@ import '../api/route/users.dart';
 import '../generated/l10n/zulip_localizations.dart';
 import '../log.dart';
 import '../model/binding.dart';
+import '../model/server_support.dart';
 import '../model/store.dart';
 import 'dialog.dart';
 import 'home.dart';
@@ -115,6 +117,20 @@ class AddAccountPage extends StatefulWidget {
     return _LoginSequenceRoute(page: const AddAccountPage());
   }
 
+  /// The hint text to show in the "Zulip server URL" input.
+  ///
+  /// If this contains an example value, it must be one that has been reserved
+  /// so that it cannot point to a real Zulip realm (nor any unknown other site).
+  /// The realm name `your-org` under zulipchat.com is reserved for this reason.
+  /// See discussion:
+  ///   https://chat.zulip.org/#narrow/channel/243-mobile-team/topic/flutter.3A.20login.20URL/near/1570347
+  // TODO(i18n): In principle this should be translated, because it's trying to
+  //   convey to the user the English phrase "your org".  But doing that is
+  //   tricky because of the need to have the example name reserved.
+  //   Realistically that probably means we'll only ever translate this for
+  //   at most a handful of languages, most likely none.
+  static const _serverUrlHint = 'your-org.zulipchat.com';
+
   @override
   State<AddAccountPage> createState() => _AddAccountPageState();
 }
@@ -166,25 +182,43 @@ class _AddAccountPageState extends State<AddAccountPage> {
         final connection = globalStore.apiConnection(realmUrl: url!, zulipFeatureLevel: null);
         try {
           serverSettings = await getServerSettings(connection);
+          final zulipVersionData = ZulipVersionData.fromServerSettings(serverSettings);
+          if (zulipVersionData.isUnsupported) {
+            throw ServerVersionUnsupportedException(zulipVersionData);
+          }
+        } on MalformedServerResponseException catch (e) {
+          final zulipVersionData = ZulipVersionData.fromMalformedServerResponseException(e);
+          if (zulipVersionData != null && zulipVersionData.isUnsupported) {
+            throw ServerVersionUnsupportedException(zulipVersionData);
+          }
+          rethrow;
         } finally {
           connection.close();
         }
       } catch (e) {
-        if (!context.mounted) {
-          return;
+        if (!context.mounted) return;
+
+        String? message;
+        Uri? learnMoreButtonUrl;
+        switch (e) {
+          case ServerVersionUnsupportedException(:final data):
+            message = zulipLocalizations.errorServerVersionUnsupportedMessage(
+              url.toString(),
+              data.zulipVersion,
+              kMinSupportedZulipVersion);
+            learnMoreButtonUrl = kServerSupportDocUrl;
+          default:
+            // TODO(#105) give more helpful feedback; see `fetchServerSettings`
+            //   in zulip-mobile's src/message/fetchActions.js.
+            message = zulipLocalizations.errorLoginCouldNotConnect(url.toString());
         }
-        // TODO(#105) give more helpful feedback; see `fetchServerSettings`
-        //   in zulip-mobile's src/message/fetchActions.js.
         showErrorDialog(context: context,
-          title: zulipLocalizations.errorLoginCouldNotConnectTitle,
-          message: zulipLocalizations.errorLoginCouldNotConnect(url.toString()));
+          title: zulipLocalizations.errorCouldNotConnectTitle,
+          message: message,
+          learnMoreButtonUrl: learnMoreButtonUrl);
         return;
       }
-      // https://github.com/dart-lang/linter/issues/4007
-      // ignore: use_build_context_synchronously
-      if (!context.mounted) {
-        return;
-      }
+      if (!context.mounted) return;
 
       unawaited(Navigator.push(context,
         LoginPage.buildRoute(serverSettings: serverSettings)));
@@ -230,10 +264,10 @@ class _AddAccountPageState extends State<AddAccountPage> {
                   // …but leave out unfocusing the input in case more editing is needed.
                 },
                 decoration: InputDecoration(
-                  labelText: zulipLocalizations.loginServerUrlInputLabel,
+                  labelText: zulipLocalizations.loginServerUrlLabel,
                   errorText: errorText,
                   helperText: kLayoutPinningHelperText,
-                  hintText: 'your-org.zulipchat.com')),
+                  hintText: AddAccountPage._serverUrlHint)),
               const SizedBox(height: 8),
               ElevatedButton(
                 onPressed: !_inProgress && errorText == null
@@ -295,8 +329,7 @@ class _LoginPageState extends State<LoginPage> {
       if (payload.realm.origin != widget.serverSettings.realmUrl.origin) throw Error();
       final apiKey = payload.decodeApiKey(_otp!);
       await _tryInsertAccountAndNavigate(
-        // TODO(server-5): Rely on userId from payload.
-        userId: payload.userId ?? await _getUserId(payload.email, apiKey),
+        userId: payload.userId,
         email: payload.email,
         apiKey: apiKey,
       );
@@ -329,6 +362,9 @@ class _LoginPageState extends State<LoginPage> {
       // Could set [_inProgress]… but we'd need to unset it if the web-auth
       // attempt is aborted (by the user closing the browser, for example),
       // and I don't think we can reliably know when that happens.
+
+      // Not using [PlatformActions.launchUrl] because web auth needs special
+      // error handling.
       await ZulipBinding.instance.launchUrl(url, mode: LaunchMode.inAppBrowserView);
     } catch (e) {
       assert(debugLog(e.toString()));

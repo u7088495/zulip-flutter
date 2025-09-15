@@ -4,6 +4,7 @@ import 'package:checks/checks.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zulip/log.dart';
+import 'package:zulip/model/actions.dart';
 import 'package:zulip/model/database.dart';
 import 'package:zulip/widgets/app.dart';
 import 'package:zulip/widgets/home.dart';
@@ -16,7 +17,7 @@ import '../model/store_checks.dart';
 import '../model/test_store.dart';
 import '../test_navigation.dart';
 import 'dialog_checks.dart';
-import 'page_checks.dart';
+import 'checks.dart';
 import 'test_app.dart';
 
 void main() {
@@ -36,24 +37,167 @@ void main() {
     }
 
     testWidgets('when no accounts, go to choose account', (tester) async {
+      check(testBinding.globalStore).accounts.isEmpty();
+      check(testBinding.globalStore).lastVisitedAccount.isNull();
       await prepare(tester);
       check(pushedRoutes).deepEquals(<Condition<Object?>>[
         (it) => it.isA<WidgetRoute>().page.isA<ChooseAccountPage>(),
       ]);
     });
 
-    testWidgets('when have accounts, go to home page for first account', (tester) async {
-      // We'll need per-account data for the account that a page will be opened
-      // for, but not for the other account.
-      await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
-      await testBinding.globalStore.insertAccount(eg.otherAccount.toCompanion(false));
-      await prepare(tester);
+    group('when have accounts', () {
+      testWidgets('with account(s) visited, go to home page for the last visited account', (tester) async {
+        await testBinding.globalStore.insertAccount(eg.otherAccount.toCompanion(false));
+        // We'll need per-account data for the account that a page will be opened
+        // for, but not for the other accounts.
+        await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
+        await testBinding.globalStore.insertAccount(eg.thirdAccount.toCompanion(false));
+        check(testBinding.globalStore).lastVisitedAccount.equals(eg.selfAccount);
+        await prepare(tester);
 
-      check(pushedRoutes).deepEquals(<Condition<Object?>>[
-        (it) => it.isA<MaterialAccountWidgetRoute>()
-          ..accountId.equals(eg.selfAccount.id)
-          ..page.isA<HomePage>(),
-      ]);
+        check(pushedRoutes).deepEquals(<Condition<Object?>>[
+          (it) => it.isA<MaterialAccountWidgetRoute>()
+            ..accountId.equals(eg.selfAccount.id)
+            ..page.isA<HomePage>(),
+        ]);
+      });
+
+      testWidgets('with last visited account logged out, go to choose account', (tester) async {
+        await testBinding.globalStore.insertAccount(eg.selfAccount.toCompanion(false));
+        await testBinding.globalStore.setLastVisitedAccount(eg.selfAccount.id);
+        await testBinding.globalStore.insertAccount(eg.otherAccount.toCompanion(false));
+        check(testBinding.globalStore).lastVisitedAccount.equals(eg.selfAccount);
+        final future = logOutAccount(testBinding.globalStore, eg.selfAccount.id);
+        await tester.pump(TestGlobalStore.removeAccountDuration);
+        await future;
+        check(testBinding.globalStore).lastVisitedAccount.isNull();
+        check(testBinding.globalStore).accounts.isNotEmpty();
+        await prepare(tester);
+
+        check(pushedRoutes).deepEquals(<Condition<Object?>>[
+          (it) => it.isA<WidgetRoute>().page.isA<ChooseAccountPage>(),
+        ]);
+      });
+    });
+  });
+
+  group('_PreventEmptyStack', () {
+    late List<Route<void>> pushedRoutes;
+    late List<Route<void>> removedRoutes;
+    late List<Route<void>> poppedRoutes;
+
+    Future<void> prepare(WidgetTester tester) async {
+      addTearDown(testBinding.reset);
+
+      pushedRoutes = [];
+      removedRoutes = [];
+      poppedRoutes = [];
+      final testNavObserver = TestNavigatorObserver();
+      testNavObserver.onPushed = (route, prevRoute) => pushedRoutes.add(route);
+      testNavObserver.onRemoved = (route, prevRoute) => removedRoutes.add(route);
+      testNavObserver.onPopped = (route, prevRoute) => poppedRoutes.add(route);
+
+      await tester.pumpWidget(ZulipApp(navigatorObservers: [testNavObserver]));
+      await tester.pump(); // start to load account
+      check(pushedRoutes).single.isA<WidgetRoute>().page.isA<HomePage>();
+      pushedRoutes.clear();
+    }
+
+    testWidgets('push route when removing last route on stack', (tester) async {
+      await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
+      await prepare(tester);
+      // The navigator stack should contain only a home page route.
+
+      // Log out, causing the home page to be removed from the stack.
+      final future = logOutAccount(testBinding.globalStore, eg.selfAccount.id);
+      await tester.pump(TestGlobalStore.removeAccountDuration);
+      await future;
+      check(testBinding.globalStore.takeDoRemoveAccountCalls())
+        .single.equals(eg.selfAccount.id);
+      // The choose-account page should appear.
+      check(removedRoutes).single.isA<WidgetRoute>().page.isA<HomePage>();
+      check(pushedRoutes).single.isA<WidgetRoute>().page.isA<ChooseAccountPage>();
+    });
+
+    testWidgets('push route when popping last route on stack', (tester) async {
+      // Set up the loading of per-account data to fail.
+      await testBinding.globalStore.insertAccount(eg.selfAccount.toCompanion(false));
+      await testBinding.globalStore.setLastVisitedAccount(eg.selfAccount.id);
+      testBinding.globalStore.loadPerAccountDuration = Duration.zero;
+      testBinding.globalStore.loadPerAccountException = eg.apiExceptionUnauthorized();
+      await prepare(tester);
+      // The navigator stack should contain only a home page route.
+
+      // Await the failed load, causing the home page to be removed
+      // and an error dialog pushed in its place.
+      await tester.pump(Duration.zero);
+      await tester.pump(TestGlobalStore.removeAccountDuration);
+      check(testBinding.globalStore.takeDoRemoveAccountCalls())
+        .single.equals(eg.selfAccount.id);
+      check(removedRoutes).single.isA<WidgetRoute>().page.isA<HomePage>();
+      check(poppedRoutes).isEmpty();
+      check(pushedRoutes).single.isA<DialogRoute<void>>();
+      pushedRoutes.clear();
+
+      // Dismiss the error dialog, causing it to be popped from the stack.
+      await tester.tap(find.byWidget(checkErrorDialog(tester,
+        expectedTitle: 'Could not connect',
+        expectedMessage:
+          'Your account at ${eg.selfAccount.realmUrl} could not be authenticated.'
+          ' Please try logging in again or use another account.')));
+      // The choose-account page should appear, because the error dialog
+      // was the only route remaining.
+      check(poppedRoutes).single.isA<DialogRoute<void>>();
+      check(pushedRoutes).single.isA<WidgetRoute>().page.isA<ChooseAccountPage>();
+    });
+
+    testWidgets('do not push route to non-empty navigator stack', (tester) async {
+      // Set up the loading of per-account data to fail, but only after a
+      // long enough time for the "Try another account" button to appear.
+      const loadPerAccountDuration = Duration(seconds: 30);
+      assert(loadPerAccountDuration > kTryAnotherAccountWaitPeriod);
+      await testBinding.globalStore.insertAccount(eg.selfAccount.toCompanion(false));
+      await testBinding.globalStore.setLastVisitedAccount(eg.selfAccount.id);
+      testBinding.globalStore.loadPerAccountDuration = loadPerAccountDuration;
+      testBinding.globalStore.loadPerAccountException = eg.apiExceptionUnauthorized();
+      await prepare(tester);
+      // The navigator stack should contain only a home page route.
+
+      // Await the "Try another account" button, and tap it.
+      await tester.pump(kTryAnotherAccountWaitPeriod);
+      await tester.tap(find.text('Try another account'));
+      await tester.pump();
+      // The navigator stack should contain the home page route
+      // and a choose-account page route.
+      check(removedRoutes).isEmpty();
+      check(poppedRoutes).isEmpty();
+      check(pushedRoutes).single.isA<WidgetRoute>().page.isA<ChooseAccountPage>();
+      pushedRoutes.clear();
+
+      // Now await the failed load, causing the home page to be removed
+      // and an error dialog pushed, while the choose-account page remains.
+      await tester.pump(loadPerAccountDuration);
+      await tester.pump(TestGlobalStore.removeAccountDuration);
+      check(testBinding.globalStore.takeDoRemoveAccountCalls())
+        .single.equals(eg.selfAccount.id);
+      check(removedRoutes).single.isA<WidgetRoute>().page.isA<HomePage>();
+      check(poppedRoutes).isEmpty();
+      check(pushedRoutes).single.isA<DialogRoute<void>>();
+      pushedRoutes.clear();
+      // The navigator stack should now contain the choose-account page route
+      // and the dialog route.
+
+      // Dismiss the error dialog, causing it to be popped from the stack.
+      await tester.tap(find.byWidget(checkErrorDialog(tester,
+        expectedTitle: 'Could not connect',
+        expectedMessage:
+          'Your account at ${eg.selfAccount.realmUrl} could not be authenticated.'
+          ' Please try logging in again or use another account.')));
+      // No routes should be pushed after dismissing the error dialog,
+      // because there was already another route remaining on the stack
+      // (namely the choose-account page route).
+      check(poppedRoutes).single.isA<DialogRoute<void>>();
+      check(pushedRoutes).isEmpty();
     });
   });
 
@@ -162,7 +306,9 @@ void main() {
     testWidgets('choosing an account clears the navigator stack', (tester) async {
       addTearDown(testBinding.reset);
       await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
-      await testBinding.globalStore.add(eg.otherAccount, eg.initialSnapshot());
+      await testBinding.globalStore.add(
+        eg.otherAccount, eg.initialSnapshot(realmUsers: [eg.otherUser]),
+        markLastVisited: false);
 
       final pushedRoutes = <Route<void>>[];
       final poppedRoutes = <Route<void>>[];
@@ -197,6 +343,27 @@ void main() {
       check(pushedRoutes).single.isA<MaterialAccountWidgetRoute>()
         ..accountId.equals(eg.otherAccount.id)
         ..page.isA<HomePage>();
+    });
+
+    testWidgets('choosing an account changes the last visited account', (tester) async {
+      addTearDown(testBinding.reset);
+      await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
+      await testBinding.globalStore.add(
+        eg.otherAccount, eg.initialSnapshot(realmUsers: [eg.otherUser]),
+        markLastVisited: false);
+
+      await tester.pumpWidget(ZulipApp());
+      await tester.pump();
+
+      final navigator = await ZulipApp.navigator;
+      unawaited(navigator.push(MaterialWidgetRoute(page: const ChooseAccountPage())));
+      await tester.pump();
+      await tester.pump();
+
+      check(testBinding.globalStore).lastVisitedAccount.equals(eg.selfAccount);
+      await tester.tap(find.text(eg.otherAccount.email));
+      await tester.pump();
+      check(testBinding.globalStore).lastVisitedAccount.equals(eg.otherAccount);
     });
 
     group('log out', () {
@@ -245,7 +412,9 @@ void main() {
       check(ZulipApp.scaffoldMessenger).isNotNull();
       check(ZulipApp.ready).value.isTrue();
     });
+  });
 
+  group('error reporting', () {
     Finder findSnackBarByText(String text) => find.descendant(
       of: find.byType(SnackBar),
       matching: find.text(text));
@@ -280,14 +449,14 @@ void main() {
       check(ZulipApp.ready).value.isFalse();
       await tester.pump();
       check(findSnackBarByText(message).evaluate()).isEmpty();
-      checkNoErrorDialog(tester);
+      checkNoDialog(tester);
 
       check(ZulipApp.ready).value.isTrue();
       // After app startup, reportErrorToUserBriefly displays a SnackBar.
       reportErrorToUserBriefly(message, details: details);
       await tester.pumpAndSettle();
       check(findSnackBarByText(message).evaluate()).single;
-      checkNoErrorDialog(tester);
+      checkNoDialog(tester);
 
       // Open the error details dialog.
       await tester.tap(find.text('Details'));
@@ -307,7 +476,7 @@ void main() {
       check(findSnackBarByText(message).evaluate()).single;
     }
 
-    testWidgets('reportErrorToUser dismissing SnackBar', (tester) async {
+    testWidgets('reportErrorToUserBriefly dismissing SnackBar', (tester) async {
       const message = 'test error message';
       const details = 'error details';
       await prepareSnackBarWithDetails(tester, message, details);
@@ -360,6 +529,25 @@ void main() {
       reportErrorToUserBriefly(null);
       await tester.pumpAndSettle();
       check(findSnackBarByText('unrelated').evaluate()).single;
+    });
+
+    testWidgets('reportErrorToUserModally', (tester) async {
+      addTearDown(testBinding.reset);
+      await tester.pumpWidget(const ZulipApp());
+      const title = 'test title';
+      const message = 'test message';
+
+      // Prior to app startup, reportErrorToUserModally only logs.
+      reportErrorToUserModally(title, message: message);
+      check(ZulipApp.ready).value.isFalse();
+      await tester.pump();
+      checkNoDialog(tester);
+
+      check(ZulipApp.ready).value.isTrue();
+      // After app startup, reportErrorToUserModally displays an [AlertDialog].
+      reportErrorToUserModally(title, message: message);
+      await tester.pump();
+      checkErrorDialog(tester, expectedTitle: title, expectedMessage: message);
     });
   });
 }

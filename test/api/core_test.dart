@@ -460,7 +460,7 @@ void main() {
       });
     }
 
-    const packageInfo = PackageInfo(version: '0.0.1', buildNumber: '1');
+    final packageInfo = eg.packageInfo(version: '0.0.1', buildNumber: '1');
 
     const testCases = [
       ('ZulipFlutter/0.0.1+1 (Android 14)',             AndroidDeviceInfo(release: '14', sdkInt: 34),                      ),
@@ -504,7 +504,7 @@ Future<T> tryRequest<T extends Object?>({
   fromJson ??= (((Map<String, dynamic> x) => x) as T Function(Map<String, dynamic>));
   return FakeApiConnection.with_((connection) {
     connection.prepare(
-      exception: exception, httpStatus: httpStatus, json: json, body: body);
+      httpException: exception, httpStatus: httpStatus, json: json, body: body);
     return connection.get(kExampleRouteName, fromJson!, 'example/route', {});
   });
 }

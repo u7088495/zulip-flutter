@@ -17,7 +17,4 @@ GetEventsResult _$GetEventsResultFromJson(Map<String, dynamic> json) =>
     );
 
 Map<String, dynamic> _$GetEventsResultToJson(GetEventsResult instance) =>
-    <String, dynamic>{
-      'events': instance.events,
-      'queue_id': instance.queueId,
-    };
+    <String, dynamic>{'events': instance.events, 'queue_id': instance.queueId};

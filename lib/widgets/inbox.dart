@@ -8,6 +8,7 @@ import '../model/unreads.dart';
 import 'action_sheet.dart';
 import 'icons.dart';
 import 'message_list.dart';
+import 'page.dart';
 import 'sticky_header.dart';
 import 'store.dart';
 import 'text.dart';
@@ -82,6 +83,7 @@ class _InboxPageState extends State<InboxPageBody> with PerAccountStoreAwareStat
 
   @override
   Widget build(BuildContext context) {
+    final zulipLocalizations = ZulipLocalizations.of(context);
     final store = PerAccountStoreWidget.of(context);
     final subscriptions = store.subscriptions;
 
@@ -160,9 +162,13 @@ class _InboxPageState extends State<InboxPageBody> with PerAccountStoreAwareStat
       sections.add(_StreamSectionData(streamId, countInStream, streamHasMention, topicItems));
     }
 
-    return SafeArea(
-      // Don't pad the bottom here; we want the list content to do that.
-      bottom: false,
+    if (sections.isEmpty) {
+      return PageBodyEmptyContentPlaceholder(
+        // TODO(#315) add e.g. "You might be interested in recent conversations."
+        message: zulipLocalizations.inboxEmptyPlaceholder);
+    }
+
+    return SafeArea( // horizontal insets
       child: StickyHeaderListView.builder(
         itemCount: sections.length,
         itemBuilder: (context, index) {
@@ -272,6 +278,9 @@ abstract class _HeaderItem extends StatelessWidget {
         //   But that's in tension with the Figma, which gives these header rows
         //   40px min height.
         onTap: onCollapseButtonTap,
+        onLongPress: this is _LongPressable
+          ? (this as _LongPressable).onLongPress
+          : null,
         child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
           Padding(padding: const EdgeInsets.all(10),
             child: Icon(size: 20, color: designVariables.sectionCollapseIcon,
@@ -316,7 +325,7 @@ class _AllDmsHeaderItem extends _HeaderItem {
 
   @override String title(ZulipLocalizations zulipLocalizations) =>
     zulipLocalizations.recentDmConversationsSectionHeader;
-  @override IconData get icon => ZulipIcons.user;
+  @override IconData get icon => ZulipIcons.two_person;
 
   // TODO(design) check if this is the right variable for these
   @override Color collapsedIconColor(context) => DesignVariables.of(context).labelMenuButton;
@@ -382,22 +391,17 @@ class _DmItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final store = PerAccountStoreWidget.of(context);
-    final selfUser = store.users[store.selfUserId]!;
-
-    final zulipLocalizations = ZulipLocalizations.of(context);
     final designVariables = DesignVariables.of(context);
 
+    // TODO write a test where a/the recipient is muted
     final title = switch (narrow.otherRecipientIds) { // TODO dedupe with [RecentDmConversationsItem]
-      [] => selfUser.fullName,
-      [var otherUserId] =>
-        store.users[otherUserId]?.fullName ?? zulipLocalizations.unknownUserName,
+      [] => store.selfUser.fullName,
+      [var otherUserId] => store.userDisplayName(otherUserId),
 
       // TODO(i18n): List formatting, like you can do in JavaScript:
       //   new Intl.ListFormat('ja').format(['Chris', 'Greg', 'Alya', 'Shu'])
       //   // 'Chris、Greg、Alya、Shu'
-      _ => narrow.otherRecipientIds.map(
-        (id) => store.users[id]?.fullName ?? zulipLocalizations.unknownUserName
-      ).join(', '),
+      _ => narrow.otherRecipientIds.map(store.userDisplayName).join(', '),
     };
 
     return Material(
@@ -431,7 +435,13 @@ class _DmItem extends StatelessWidget {
   }
 }
 
-class _StreamHeaderItem extends _HeaderItem {
+mixin _LongPressable on _HeaderItem {
+  // TODO(#1272) move to _HeaderItem base class
+  //   when DM headers become long-pressable; remove mixin
+  Future<void> onLongPress();
+}
+
+class _StreamHeaderItem extends _HeaderItem with _LongPressable {
   final Subscription subscription;
 
   const _StreamHeaderItem({
@@ -464,6 +474,11 @@ class _StreamHeaderItem extends _HeaderItem {
     }
   }
   @override Future<void> onRowTap() => onCollapseButtonTap(); // TODO open channel narrow
+
+  @override
+  Future<void> onLongPress() async {
+    showChannelActionSheet(sectionContext, channelId: subscription.streamId);
+  }
 }
 
 class _StreamSection extends StatelessWidget {
@@ -507,7 +522,8 @@ class _TopicItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final _StreamSectionTopicData(:topic, :count, :hasMention) = data;
+    final _StreamSectionTopicData(
+      :topic, :count, :hasMention, :lastUnreadId) = data;
 
     final store = PerAccountStoreWidget.of(context);
     final subscription = store.subscriptions[streamId]!;
@@ -525,7 +541,9 @@ class _TopicItem extends StatelessWidget {
             MessageListPage.buildRoute(context: context, narrow: narrow));
         },
         onLongPress: () => showTopicActionSheet(context,
-          channelId: streamId, topic: topic),
+          channelId: streamId,
+          topic: topic,
+          someMessageIdInTopic: lastUnreadId),
         child: ConstrainedBox(constraints: const BoxConstraints(minHeight: 34),
           child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
             const SizedBox(width: 63),
@@ -535,12 +553,13 @@ class _TopicItem extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 17,
                   height: (20 / 17),
+                  fontStyle: topic.displayName == null ? FontStyle.italic : null,
                   // TODO(design) check if this is the right variable
                   color: designVariables.labelMenuButton,
                 ),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                topic.displayName))),
+                topic.displayName ?? store.realmEmptyTopicDisplayName))),
             const SizedBox(width: 12),
             if (hasMention) const _IconMarker(icon: ZulipIcons.at_sign),
             // TODO(design) copies the "@" marker color; is there a better color?

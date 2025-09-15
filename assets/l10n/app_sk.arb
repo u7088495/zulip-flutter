@@ -69,9 +69,9 @@
       }
     }
   },
-  "loginServerUrlInputLabel": "Adresa vášho Zulip servera",
-  "@loginServerUrlInputLabel": {
-    "description": "Input label in login page for Zulip server URL entry."
+  "loginServerUrlLabel": "Adresa vášho Zulip servera",
+  "@loginServerUrlLabel": {
+    "description": "Label in login page for Zulip server URL entry."
   },
   "errorMessageNotSent": "Správa nebola odoslaná",
   "@errorMessageNotSent": {
@@ -118,10 +118,6 @@
   "actionSheetOptionShare": "Zdielať",
   "@actionSheetOptionShare": {
     "description": "Label for share button on action sheet."
-  },
-  "actionSheetOptionQuoteAndReply": "Citovať a odpovedať",
-  "@actionSheetOptionQuoteAndReply": {
-    "description": "Label for Quote and reply button on action sheet."
   },
   "actionSheetOptionStarMessage": "Ohviezdičkovať správu",
   "@actionSheetOptionStarMessage": {
@@ -170,10 +166,6 @@
         "example": "http://example.com/"
       }
     }
-  },
-  "errorLoginCouldNotConnectTitle": "Nepodarilo sa pripojiť",
-  "@errorLoginCouldNotConnectTitle": {
-    "description": "Error title when the app could not connect to the server."
   },
   "errorMessageDoesNotSeemToExist": "Správa zrejme neexistuje.",
   "@errorMessageDoesNotSeemToExist": {

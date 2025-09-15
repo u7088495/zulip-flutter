@@ -1,18 +1,20 @@
 import 'dart:io' as io;
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:checks/checks.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_checks/flutter_checks.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:legacy_checks/legacy_checks.dart';
 import 'package:zulip/api/model/events.dart';
 import 'package:zulip/api/model/model.dart';
 import 'package:zulip/api/route/realm.dart';
-import 'package:zulip/model/emoji.dart';
 import 'package:zulip/model/narrow.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/widgets/content.dart';
@@ -28,6 +30,7 @@ import '../model/emoji_test.dart';
 import '../model/test_store.dart';
 import '../stdlib_checks.dart';
 import '../test_images.dart';
+import 'checks.dart';
 import 'content_test.dart';
 import 'dialog_checks.dart';
 import 'test_app.dart';
@@ -35,9 +38,11 @@ import 'text_test.dart';
 
 void main() {
   TestZulipBinding.ensureInitialized();
+  MessageListPage.debugEnableMarkReadOnScroll = false;
 
   late PerAccountStore store;
   late FakeApiConnection connection;
+  late TransitionDurationObserver transitionDurationObserver;
 
   Future<void> prepare() async {
     addTearDown(testBinding.reset);
@@ -52,13 +57,36 @@ void main() {
     await fontLoader.load();
   }
 
+  // Base JSON for various unicode emoji reactions. Just missing user_id.
+  final u1 = {'emoji_name': '+1', 'emoji_code': '1f44d', 'reaction_type': 'unicode_emoji'};
+  final u2 = {'emoji_name': 'family_man_man_girl_boy', 'emoji_code': '1f468-200d-1f468-200d-1f467-200d-1f466', 'reaction_type': 'unicode_emoji'};
+  final u3 = {'emoji_name': 'slight_smile', 'emoji_code': '1f642', 'reaction_type': 'unicode_emoji'};
+  final u4 = {'emoji_name': 'tada', 'emoji_code': '1f389', 'reaction_type': 'unicode_emoji'};
+  final u5 = {'emoji_name': 'exploding_head', 'emoji_code': '1f92f', 'reaction_type': 'unicode_emoji'};
+
+  // Base JSON for various realm-emoji reactions. Just missing user_id.
+  final i1 = {'emoji_name': 'twocents', 'emoji_code': '181', 'reaction_type': 'realm_emoji'};
+  final i2 = {'emoji_name': 'threecents', 'emoji_code': '182', 'reaction_type': 'realm_emoji'};
+
+  // Base JSON for the one "Zulip extra emoji" reaction. Just missing user_id.
+  final z1 = {'emoji_name': 'zulip', 'emoji_code': 'zulip', 'reaction_type': 'zulip_extra_emoji'};
+
+  String nameOf(Map<String, String> jsonEmoji) => jsonEmoji['emoji_name']!;
+
   Future<void> setupChipsInBox(WidgetTester tester, {
     required List<Reaction> reactions,
     double width = 245.0, // (seen in context on an iPhone 13 Pro)
   }) async {
     final message = eg.streamMessage(reactions: reactions);
+    await store.addMessage(message);
 
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+      FakeAccessibilityFeatures(accessibleNavigation: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+
+    transitionDurationObserver = TransitionDurationObserver();
     await tester.pumpWidget(TestZulipApp(accountId: eg.selfAccount.id,
+      navigatorObservers: [transitionDurationObserver],
       child: Center(
         child: ColoredBox(
           color: Colors.white,
@@ -72,6 +100,44 @@ void main() {
 
     final reactionChipsList = tester.element(find.byType(ReactionChipsList));
     check(reactionChipsList).size.isNotNull().width.equals(width);
+  }
+
+  final findViewReactionsTabBar = find.semantics.byPredicate((node) =>
+    node.role == SemanticsRole.tabBar
+    && node.label.contains('Emoji reactions'));
+
+  FinderBase<SemanticsNode> findViewReactionsEmojiItem(String emojiName) =>
+    find.semantics.descendant(
+      of: findViewReactionsTabBar,
+      matching: find.semantics.byPredicate(
+        (node) => node.role == SemanticsRole.tab && node.label.contains(emojiName)));
+
+  /// Checks that a given emoji item is present or absent in [ViewReactions].
+  ///
+  /// If the `expectFoo` fields are null, checks that the item is absent,
+  /// otherwise checks that it is present with the given details.
+  void checkViewReactionsEmojiItem(WidgetTester tester, {
+    required String emojiName,
+    required int? expectCount,
+    required bool? expectSelected,
+  }) {
+    assert((expectCount == null) == (expectSelected == null));
+    check(findViewReactionsTabBar).findsOne();
+
+    final nodes = findViewReactionsEmojiItem(emojiName).evaluate();
+    check(nodes).length.isLessThan(2);
+
+    if (expectCount == null) {
+      check(nodes).isEmpty();
+    } else {
+      final expectedLabel = switch (expectCount) {
+        1 => '$emojiName: 1 vote',
+        _ => '$emojiName: $expectCount votes',
+      };
+      check(nodes).single.containsSemantics(
+        label: expectedLabel,
+        isSelected: expectSelected!);
+    }
   }
 
   group('ReactionChipsList', () {
@@ -141,8 +207,8 @@ void main() {
                 await setupChipsInBox(tester, reactions: reactions);
 
                 final reactionChipsList = tester.element(find.byType(ReactionChipsList));
-                check(MediaQuery.of(reactionChipsList))
-                  .textScaler.equals(TextScaler.linear(textScaleFactor));
+                check(MediaQuery.of(reactionChipsList).textScaler).legacyMatcher(
+                  isSystemTextScaler(withScaleFactor: textScaleFactor));
                 check(Directionality.of(reactionChipsList)).equals(textDirection);
 
                 // TODO(upstream) Do these in an addTearDown, once we can:
@@ -156,20 +222,6 @@ void main() {
               // So, skip on macOS.
               skip: io.Platform.isMacOS);
             }
-
-            // Base JSON for various unicode emoji reactions. Just missing user_id.
-            final u1 = {'emoji_name': '+1', 'emoji_code': '1f44d', 'reaction_type': 'unicode_emoji'};
-            final u2 = {'emoji_name': 'family_man_man_girl_boy', 'emoji_code': '1f468-200d-1f468-200d-1f467-200d-1f466', 'reaction_type': 'unicode_emoji'};
-            final u3 = {'emoji_name': 'smile', 'emoji_code': '1f642', 'reaction_type': 'unicode_emoji'};
-            final u4 = {'emoji_name': 'tada', 'emoji_code': '1f389', 'reaction_type': 'unicode_emoji'};
-            final u5 = {'emoji_name': 'exploding_head', 'emoji_code': '1f92f', 'reaction_type': 'unicode_emoji'};
-
-            // Base JSON for various realm-emoji reactions. Just missing user_id.
-            final i1 = {'emoji_name': 'twocents', 'emoji_code': '181', 'reaction_type': 'realm_emoji'};
-            final i2 = {'emoji_name': 'threecents', 'emoji_code': '182', 'reaction_type': 'realm_emoji'};
-
-            // Base JSON for the one "Zulip extra emoji" reaction. Just missing user_id.
-            final z1 = {'emoji_name': 'zulip', 'emoji_code': 'zulip', 'reaction_type': 'zulip_extra_emoji'};
 
             final user1 = eg.user(fullName: 'abc');
             final user2 = eg.user(fullName: 'Long Name With Many Words In It');
@@ -226,6 +278,45 @@ void main() {
         }
       }
     }
+
+    testWidgets('show "Muted user" label for muted reactors', (tester) async {
+      final user1 = eg.user(userId: 1, fullName: 'User 1');
+      final user2 = eg.user(userId: 2, fullName: 'User 2');
+
+      await prepare();
+      await store.addUsers([user1, user2]);
+      await store.setMutedUsers([user1.userId]);
+      await setupChipsInBox(tester,
+        reactions: [
+          Reaction.fromJson({'emoji_name': '+1', 'emoji_code': '1f44d', 'reaction_type': 'unicode_emoji', 'user_id': user1.userId}),
+          Reaction.fromJson({'emoji_name': '+1', 'emoji_code': '1f44d', 'reaction_type': 'unicode_emoji', 'user_id': user2.userId}),
+        ]);
+
+      final reactionChipFinder = find.byType(ReactionChip);
+      check(reactionChipFinder).findsOne();
+      check(find.descendant(
+        of: reactionChipFinder,
+        matching: find.text('Muted user, User 2')
+      )).findsOne();
+    });
+
+    testWidgets('show view-reactions sheet on long-press', (tester) async {
+      await prepare();
+      await store.addUser(eg.otherUser);
+
+      await setupChipsInBox(tester,
+        reactions: [
+          Reaction.fromJson({'user_id': eg.selfUser.userId, ...u1}),
+          Reaction.fromJson({'user_id': eg.otherUser.userId, ...u2}),
+        ]);
+
+      await tester.longPress(find.byType(ReactionChip).last);
+      await tester.pump();
+      await transitionDurationObserver.pumpPastTransition(tester);
+
+      checkViewReactionsEmojiItem(tester,
+        emojiName: nameOf(u2), expectCount: 1, expectSelected: true);
+    });
   });
 
   testWidgets('Smoke test for light/dark/lerped', (tester) async {
@@ -238,7 +329,7 @@ void main() {
     await setupChipsInBox(tester, reactions: [
       Reaction.fromJson({
         'user_id': eg.selfUser.userId,
-        'emoji_name': 'smile', 'emoji_code': '1f642', 'reaction_type': 'unicode_emoji'}),
+        'emoji_name': 'slight_smile', 'emoji_code': '1f642', 'reaction_type': 'unicode_emoji'}),
       Reaction.fromJson({
         'user_id': eg.otherUser.userId,
         'emoji_name': 'tada', 'emoji_code': '1f389', 'reaction_type': 'unicode_emoji'}),
@@ -246,11 +337,12 @@ void main() {
 
     Color? backgroundColor(String emojiName) {
       final material = tester.widget<Material>(find.descendant(
-        of: find.byTooltip(emojiName), matching: find.byType(Material)));
+        of: find.bySemanticsLabel(RegExp(r'^' + RegExp.escape(emojiName) + r':\ ')),
+        matching: find.byType(Material)));
       return material.color;
     }
 
-    check(backgroundColor('smile')).isNotNull()
+    check(backgroundColor('slight_smile')).isNotNull()
       .isSameColorAs(EmojiReactionTheme.light.bgSelected);
     check(backgroundColor('tada')).isNotNull()
       .isSameColorAs(EmojiReactionTheme.light.bgUnselected);
@@ -260,13 +352,13 @@ void main() {
 
     await tester.pump(kThemeAnimationDuration * 0.4);
     final expectedLerped = EmojiReactionTheme.light.lerp(EmojiReactionTheme.dark, 0.4);
-    check(backgroundColor('smile')).isNotNull()
+    check(backgroundColor('slight_smile')).isNotNull()
       .isSameColorAs(expectedLerped.bgSelected);
     check(backgroundColor('tada')).isNotNull()
       .isSameColorAs(expectedLerped.bgUnselected);
 
     await tester.pump(kThemeAnimationDuration * 0.6);
-    check(backgroundColor('smile')).isNotNull()
+    check(backgroundColor('slight_smile')).isNotNull()
       .isSameColorAs(EmojiReactionTheme.dark.bgSelected);
     check(backgroundColor('tada')).isNotNull()
       .isSameColorAs(EmojiReactionTheme.dark.bgUnselected);
@@ -298,14 +390,17 @@ void main() {
   // - Non-animated image emoji is selected when intended
 
   group('EmojiPicker', () {
-    final popularCandidates = EmojiStore.popularEmojiCandidates;
+    final popularCandidates =
+      (eg.store()..setServerEmojiData(eg.serverEmojiDataPopular))
+        .popularEmojiCandidates();
 
     Future<void> setupEmojiPicker(WidgetTester tester, {
       required StreamMessage message,
       required Narrow narrow,
     }) async {
       addTearDown(testBinding.reset);
-      assert(narrow.containsMessage(message));
+      // TODO(#1667) will be null in a search narrow; remove `!`.
+      assert(narrow.containsMessage(message)!);
 
       final httpClient = FakeImageHttpClient();
       debugNetworkImageHttpClientProvider = () => httpClient;
@@ -329,6 +424,11 @@ void main() {
       await tester.pumpWidget(TestZulipApp(accountId: eg.selfAccount.id,
         child: MessageListPage(initNarrow: narrow)));
 
+      store.setServerEmojiData(eg.serverEmojiDataPopularPlus(
+        ServerEmojiData(codeToNames: {
+          '1f4a4': ['zzz', 'sleepy'], // (just 'zzz' in real data)
+        })));
+
       // global store, per-account store, and message list get loaded
       await tester.pumpAndSettle();
       // request the message action sheet
@@ -336,9 +436,6 @@ void main() {
       // sheet appears onscreen; default duration of bottom-sheet enter animation
       await tester.pump(const Duration(milliseconds: 250));
 
-      store.setServerEmojiData(ServerEmojiData(codeToNames: {
-        '1f4a4': ['zzz', 'sleepy'], // (just 'zzz' in real data)
-      }));
       await store.handleEvent(RealmEmojiUpdateEvent(id: 1, realmEmoji: {
         '1': eg.realmEmojiItem(emojiCode: '1', emojiName: 'buzzing'),
       }));
@@ -350,6 +447,9 @@ void main() {
     }
 
     final searchFieldFinder = find.widgetWithText(TextField, 'Search emoji');
+
+    Finder findInPicker(Finder finder) =>
+      find.descendant(of: find.byType(EmojiPicker), matching: finder);
 
     Condition<Object?> conditionEmojiListEntry({
       required ReactionType emojiType,
@@ -429,9 +529,7 @@ void main() {
       await setupEmojiPicker(tester, message: message, narrow: TopicNarrow.ofMessage(message));
 
       connection.prepare(json: {});
-      await tester.tap(find.descendant(
-        of: find.byType(BottomSheet),
-        matching: find.text('\u{1f4a4}'))); // 'zzz' emoji
+      await tester.tap(findInPicker(find.text('\u{1f4a4}'))); // 'zzz' emoji
       await tester.pump(Duration.zero);
 
       check(connection.lastRequest).isA<http.Request>()
@@ -452,15 +550,9 @@ void main() {
 
       connection.prepare(
         delay: const Duration(seconds: 2),
-        httpStatus: 400, json: {
-          'code': 'BAD_REQUEST',
-          'msg': 'Invalid message(s)',
-          'result': 'error',
-        });
+        apiException: eg.apiBadRequest(message: 'Invalid message(s)'));
 
-      await tester.tap(find.descendant(
-        of: find.byType(BottomSheet),
-        matching: find.text('\u{1f4a4}'))); // 'zzz' emoji
+      await tester.tap(findInPicker(find.text('\u{1f4a4}'))); // 'zzz' emoji
       await tester.pump(); // register tap
       await tester.pump(const Duration(seconds: 1)); // emoji picker animates away
       await tester.pump(const Duration(seconds: 1)); // error arrives; error dialog shows
@@ -471,9 +563,205 @@ void main() {
 
       debugNetworkImageHttpClientProvider = null;
     });
-  });
-}
 
-extension EmojiPickerListItemChecks on Subject<EmojiPickerListEntry> {
-  Subject<EmojiCandidate> get emoji => has((x) => x.emoji, 'emoji');
+    group('handle view paddings', () {
+      const screenHeight = 400.0;
+
+      late Rect scrollViewRect;
+      final scrollViewFinder = findInPicker(find.bySubtype<ScrollView>());
+
+      Rect getListEntriesRect(WidgetTester tester) =>
+        tester.getRect(find.byType(EmojiPickerListEntry).first)
+          .expandToInclude(tester.getRect(find.byType(EmojiPickerListEntry).last));
+
+      Future<void> prepare(WidgetTester tester, {
+        required FakeViewPadding viewPadding,
+      }) async {
+        addTearDown(tester.view.reset);
+        tester.view.physicalSize = Size(640, screenHeight);
+        // This makes it easier to convert between device pixels used for
+        // [FakeViewPadding] and logical pixels used in tests.
+        // If needed, there is a clearer way to implement this generally.
+        // See comment: https://github.com/zulip/zulip-flutter/pull/1315/files#r1962703436
+        tester.view.devicePixelRatio = 1.0;
+
+        tester.view.viewPadding = viewPadding;
+        tester.view.padding = viewPadding;
+
+        final message = eg.streamMessage();
+        await setupEmojiPicker(tester,
+          message: message, narrow: TopicNarrow.ofMessage(message));
+
+        scrollViewRect = tester.getRect(scrollViewFinder);
+        // The scroll view should expand all the way to the bottom of the
+        // screen, even if there is device bottom padding.
+        check(scrollViewRect)
+          ..bottom.equals(screenHeight)
+          // There should always be enough entries to overflow the scroll view.
+          ..height.isLessThan(getListEntriesRect(tester).height);
+      }
+
+      testWidgets('no view padding', (tester) async {
+        await prepare(tester, viewPadding: FakeViewPadding.zero);
+
+        // The top edge of the list entries is padded by 8px from the top edge
+        // of the scroll view; the bottom edge is out of view.
+        Rect listEntriesRect = getListEntriesRect(tester);
+        check(scrollViewRect)
+          ..top.equals(listEntriesRect.top - 8)
+          ..bottom.isLessThan(listEntriesRect.bottom);
+
+        // Scroll to the very bottom of the list with a large offset.
+        await tester.drag(scrollViewFinder, Offset(0, -500));
+        await tester.pumpAndSettle();  // let overscroll finish
+        // The top edge of the list entries is out of view;
+        // the bottom is padded by 8px, the minimum padding, from the bottom
+        // edge of the scroll view.
+        listEntriesRect = getListEntriesRect(tester);
+        check(scrollViewRect)
+          ..top.isGreaterThan(listEntriesRect.top)
+          ..bottom.equals(listEntriesRect.bottom + 8);
+
+        debugNetworkImageHttpClientProvider = null;
+      });
+
+      testWidgets('with bottom view padding', (tester) async {
+        await prepare(tester, viewPadding: FakeViewPadding(bottom: 10));
+
+        // The top edge of the list entries is padded by 8px from the top edge
+        // of the scroll view; the bottom edge is out of view.
+        Rect listEntriesRect = getListEntriesRect(tester);
+        check(scrollViewRect)
+          ..top.equals(listEntriesRect.top - 8)
+          ..bottom.isLessThan(listEntriesRect.bottom);
+
+        // Scroll to the very bottom of the list with a large offset.
+        await tester.drag(scrollViewFinder, Offset(0, -500));
+        await tester.pumpAndSettle();  // let overscroll finish
+        // The top edge of the list entries is out of view;
+        // the bottom edge is padded by 10px from the bottom edge of the scroll
+        // view, because the view bottom padding is larger than the minimum 8px.
+        listEntriesRect = getListEntriesRect(tester);
+        check(scrollViewRect)
+          ..top.isGreaterThan(listEntriesRect.top)
+          ..bottom.equals(listEntriesRect.bottom + 10);
+
+        debugNetworkImageHttpClientProvider = null;
+      });
+    });
+  });
+
+  group('showViewReactionsSheet', () {
+    Future<void> setupViewReactionsSheet(WidgetTester tester, {
+      required StreamMessage message,
+      List<User> usersExcludingSelf = const [],
+    }) async {
+      assert(message.reactions != null && message.reactions!.total > 0);
+      addTearDown(testBinding.reset);
+
+      final httpClient = FakeImageHttpClient();
+      debugNetworkImageHttpClientProvider = () => httpClient;
+      httpClient.request.response
+        ..statusCode = HttpStatus.ok
+        ..content = kSolidBlueAvatar;
+
+      await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
+      store = await testBinding.globalStore.perAccount(eg.selfAccount.id);
+      await store.addUsers([
+        eg.selfUser,
+        ...usersExcludingSelf,
+      ]);
+      final stream = eg.stream(streamId: message.streamId);
+      await store.addStream(stream);
+      await store.addSubscription(eg.subscription(stream));
+
+      transitionDurationObserver = TransitionDurationObserver();
+
+      connection = store.connection as FakeApiConnection;
+      connection.prepare(json: eg.newestGetMessagesResult(
+        foundOldest: true, messages: [message]).toJson());
+      await tester.pumpWidget(TestZulipApp(accountId: eg.selfAccount.id,
+        navigatorObservers: [transitionDurationObserver],
+        child: MessageListPage(initNarrow: CombinedFeedNarrow())));
+
+      store.setServerEmojiData(eg.serverEmojiDataPopularPlus(
+        ServerEmojiData(codeToNames: {
+          '1f4a4': ['zzz', 'sleepy'], // (just 'zzz' in real data)
+        })));
+
+      // global store, per-account store, and message list get loaded
+      await tester.pumpAndSettle();
+
+      await tester.longPress(find.byType(MessageContent));
+      await transitionDurationObserver.pumpPastTransition(tester);
+
+      await store.handleEvent(RealmEmojiUpdateEvent(id: 1, realmEmoji: {
+        '1': eg.realmEmojiItem(emojiCode: '1', emojiName: 'buzzing'),
+      }));
+
+      await tester.tap(find.byIcon(ZulipIcons.see_who_reacted));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byType(ViewReactions));
+    }
+
+    void checkUserList(WidgetTester tester, String emojiName, List<User> expectUsers) {
+      final findPanel = find.semantics.byPredicate((node) =>
+        node.role == SemanticsRole.tabPanel
+        && node.label.contains('Votes for $emojiName'));
+
+      final panel = findPanel.evaluate().single;
+      check(panel).containsSemantics(label: 'Votes for $emojiName (${expectUsers.length})');
+
+      for (final user in expectUsers) {
+        check(find.semantics.descendant(
+          of: findPanel,
+          matching: find.semantics.byLabel(user.fullName)),
+        because: 'expect ${user.fullName}').findsOne();
+      }
+    }
+
+    testWidgets('smoke', (tester) async {
+      final reactions = <Reaction>[
+        Reaction.fromJson({'user_id': eg.selfUser.userId, ...i1}),
+        Reaction.fromJson({'user_id': eg.selfUser.userId, ...z1}),
+        Reaction.fromJson({'user_id': eg.selfUser.userId, ...u1}),
+        Reaction.fromJson({'user_id': eg.selfUser.userId, ...u2}),
+
+        Reaction.fromJson({'user_id': eg.otherUser.userId, ...i1}),
+        Reaction.fromJson({'user_id': eg.otherUser.userId, ...z1}),
+        Reaction.fromJson({'user_id': eg.otherUser.userId, ...u2}),
+        Reaction.fromJson({'user_id': eg.otherUser.userId, ...u3}),
+      ];
+
+      final message = eg.streamMessage(reactions: reactions);
+      await setupViewReactionsSheet(tester, message: message, usersExcludingSelf: [eg.otherUser]);
+
+      checkViewReactionsEmojiItem(tester, emojiName: nameOf(i1), expectCount: 2, expectSelected: true);
+      checkViewReactionsEmojiItem(tester, emojiName: nameOf(z1), expectCount: 2, expectSelected: false);
+      checkViewReactionsEmojiItem(tester, emojiName: nameOf(u1), expectCount: 1, expectSelected: false);
+      checkViewReactionsEmojiItem(tester, emojiName: nameOf(u2), expectCount: 2, expectSelected: false);
+      checkViewReactionsEmojiItem(tester, emojiName: nameOf(u3), expectCount: 1, expectSelected: false);
+
+      checkUserList(tester, nameOf(i1), [eg.selfUser, eg.otherUser]);
+      tester.semantics.tap(findViewReactionsEmojiItem(nameOf(z1)));
+      await tester.pump();
+      checkUserList(tester, nameOf(z1), [eg.selfUser, eg.otherUser]);
+      tester.semantics.tap(findViewReactionsEmojiItem(nameOf(u1)));
+      await tester.pump();
+      checkUserList(tester, nameOf(u1), [eg.selfUser]);
+      tester.semantics.tap(findViewReactionsEmojiItem(nameOf(u3)));
+      await tester.pump();
+      checkUserList(tester, nameOf(u3), [eg.otherUser]);
+
+      // TODO(upstream) Do this in an addTearDown once we can:
+      //   https://github.com/flutter/flutter/issues/123189
+      debugNetworkImageHttpClientProvider = null;
+    });
+
+    // TODO test last-vote-removed on selected emoji
+    // TODO test message deleted
+    // TODO test that tapping a user opens their profile
+    // TODO test emoji list's scroll-into-view logic
+    // TODO test expired event queue/refresh
+  });
 }

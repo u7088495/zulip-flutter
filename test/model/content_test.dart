@@ -6,7 +6,9 @@ import 'package:stack_trace/stack_trace.dart';
 import 'package:test/scaffolding.dart';
 import 'package:zulip/model/code_block.dart';
 import 'package:zulip/model/content.dart';
+import 'package:zulip/model/katex.dart';
 
+import 'binding.dart';
 import 'content_checks.dart';
 
 /// An example of Zulip content for test cases.
@@ -82,6 +84,13 @@ class ContentExample {
     expectedText: 'bold',
     '<p><strong>bold</strong></p>',
     const StrongNode(nodes: [TextNode('bold')]));
+
+  static final deleted = ContentExample.inline(
+    'deleted/strike-through',
+    '~~strike through~~',
+    expectedText: 'strike through',
+    '<p><del>strike through</del></p>',
+    const DeletedNode(nodes: [TextNode('strike through')]));
 
   static final emphasis = ContentExample.inline(
     'emphasis/italic',
@@ -269,6 +278,26 @@ class ContentExample {
       url: '/#narrow/channel/378-api-design/topic/notation.20for.20near.20links/near/1972281',
       nodes: [TextNode('#api design > notation for near links @ 💬')]));
 
+  static const orderedListCustomStart = ContentExample(
+    'ordered list with custom start',
+    '5. fifth\n6. sixth',
+    '<ol start="5">\n<li>fifth</li>\n<li>sixth</li>\n</ol>',
+    [OrderedListNode(start: 5, [
+      [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('fifth')])],
+      [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('sixth')])],
+    ])],
+  );
+
+  static const orderedListLargeStart = ContentExample(
+    'ordered list with large start number',
+    '9999. first\n10000. second',
+    '<ol start="9999">\n<li>first</li>\n<li>second</li>\n</ol>',
+    [OrderedListNode(start: 9999, [
+      [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('first')])],
+      [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('second')])],
+    ])],
+  );
+
   static const spoilerDefaultHeader = ContentExample(
     'spoiler with default header',
     '```spoiler\nhello world\n```',
@@ -306,8 +335,8 @@ class ContentExample {
         '<p><em>italic</em> <a href="https://zulip.com/">zulip</a></p>\n'
         '</div></div>',
     [SpoilerNode(
-      header: [ListNode(ListStyle.ordered, [
-        [ListNode(ListStyle.unordered, [
+      header: [OrderedListNode(start: 1, [
+        [UnorderedListNode([
           [HeadingNode(level: HeadingLevel.h2, links: null, nodes: [
             TextNode('hello'),
           ])]
@@ -489,22 +518,103 @@ class ContentExample {
   static final mathInline = ContentExample.inline(
     'inline math',
     r"$$ \lambda $$",
-    expectedText: r'\lambda',
+    expectedText: r'λ',
     '<p><span class="katex">'
       '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>λ</mi></mrow>'
         '<annotation encoding="application/x-tex"> \\lambda </annotation></semantics></math></span>'
       '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">λ</span></span></span></span></p>',
-    const MathInlineNode(texSource: r'\lambda'));
+    MathInlineNode(texSource: r'\lambda', nodes: [
+      KatexSpanNode(nodes: [
+        KatexStrutNode(heightEm: 0.6944, verticalAlignEm: null),
+        KatexSpanNode(
+          styles: KatexSpanStyles(
+            fontFamily: 'KaTeX_Math',
+            fontStyle: KatexSpanFontStyle.italic),
+          text: 'λ'),
+      ]),
+    ]));
+
+  // A test message to test the fallback behaviour of KaTeX implementation.
+  static final mathInlineUnknown = ContentExample.inline(
+    'inline math',
+    null, // r"$$ \lambda $$" (hypothetical server variation)
+    expectedText: r'\lambda',
+    '<p><span class="katex">'
+      '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>λ</mi></mrow>'
+        '<annotation encoding="application/x-tex"> \\lambda </annotation></semantics></math></span>'
+      '<span class="katex-html" aria-hidden="true">'
+        '<span class="base unknown">' // Server doesn't generate this 'unknown' class.
+        '<span class="strut" style="height:0.6944em;"></span>'
+        '<span class="mord mathnormal">λ</span></span></span></span></p>',
+    MathInlineNode(texSource: r'\lambda', nodes: null));
 
   static const mathBlock = ContentExample(
     'math block',
     "```math\n\\lambda\n```",
-    expectedText: r'\lambda',
+    expectedText: r'λ',
     '<p><span class="katex-display"><span class="katex">'
       '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>λ</mi></mrow>'
         '<annotation encoding="application/x-tex">\\lambda</annotation></semantics></math></span>'
       '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">λ</span></span></span></span></span></p>',
-    [MathBlockNode(texSource: r'\lambda')]);
+    [MathBlockNode(texSource: r'\lambda', nodes: [
+      KatexSpanNode(nodes: [
+        KatexStrutNode(heightEm: 0.6944, verticalAlignEm: null),
+        KatexSpanNode(
+          styles: KatexSpanStyles(
+            fontFamily: 'KaTeX_Math',
+            fontStyle: KatexSpanFontStyle.italic),
+          text: 'λ'),
+      ]),
+    ])]);
+
+  // A test message to test the fallback behaviour of KaTeX implementation.
+  static const mathBlockUnknown = ContentExample(
+    'math block unknown, fallback to TeX source',
+    null, // r"```math\n\lambda\n```" (hypothetical server variation)
+    expectedText: r'\lambda',
+    '<p><span class="katex-display"><span class="katex">'
+      '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>λ</mi></mrow>'
+        '<annotation encoding="application/x-tex">\\lambda</annotation></semantics></math></span>'
+      '<span class="katex-html" aria-hidden="true">'
+        '<span class="base unknown">' // Server doesn't generate this 'unknown' class.
+          '<span class="strut" style="height:0.6944em;"></span>'
+          '<span class="mord mathnormal">λ</span></span></span></span></span></p>',
+    [MathBlockNode(texSource: r'\lambda', nodes: null)]);
+
+  static const mathBlocksMultipleInParagraph = ContentExample(
+    'math blocks, multiple in paragraph',
+    '```math\na\n\nb\n```',
+    // https://chat.zulip.org/#narrow/channel/7-test-here/topic/.E2.9C.94.20Rajesh/near/2001490
+    '<p>'
+      '<span class="katex-display"><span class="katex">'
+        '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>a</mi></mrow>'
+          '<annotation encoding="application/x-tex">a</annotation></semantics></math></span>'
+        '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal">a</span></span></span></span></span>\n\n'
+      '<span class="katex-display"><span class="katex">'
+        '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>b</mi></mrow>'
+          '<annotation encoding="application/x-tex">b</annotation></semantics></math></span>'
+        '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">b</span></span></span></span></span></p>', [
+      MathBlockNode(texSource: 'a', nodes: [
+        KatexSpanNode(nodes: [
+          KatexStrutNode(heightEm: 0.4306, verticalAlignEm: null),
+          KatexSpanNode(
+            styles: KatexSpanStyles(
+              fontFamily: 'KaTeX_Math',
+              fontStyle: KatexSpanFontStyle.italic),
+            text: 'a'),
+        ]),
+      ]),
+      MathBlockNode(texSource: 'b', nodes: [
+        KatexSpanNode(nodes: [
+          KatexStrutNode(heightEm: 0.6944, verticalAlignEm: null),
+          KatexSpanNode(
+            styles: KatexSpanStyles(
+              fontFamily: 'KaTeX_Math',
+              fontStyle: KatexSpanFontStyle.italic),
+            text: 'b'),
+        ]),
+      ]),
+    ]);
 
   static const mathBlockInQuote = ContentExample(
     'math block in quote',
@@ -520,7 +630,101 @@ class ContentExample {
           '<annotation encoding="application/x-tex">\\lambda</annotation></semantics></math></span>'
         '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">λ</span></span></span></span></span>'
       '<br>\n</p>\n</blockquote>',
-    [QuotationNode([MathBlockNode(texSource: r'\lambda')])]);
+    [QuotationNode([
+      MathBlockNode(texSource: r'\lambda', nodes: [
+        KatexSpanNode(nodes: [
+          KatexStrutNode(heightEm: 0.6944, verticalAlignEm: null),
+          KatexSpanNode(
+            styles: KatexSpanStyles(
+              fontFamily: 'KaTeX_Math',
+              fontStyle: KatexSpanFontStyle.italic),
+            text: 'λ'),
+        ]),
+      ]),
+    ])]);
+
+  static const mathBlocksMultipleInQuote = ContentExample(
+    'math blocks, multiple in quote',
+    "````quote\n```math\na\n\nb\n```\n````",
+    // https://chat.zulip.org/#narrow/channel/7-test-here/topic/.E2.9C.94.20Rajesh/near/2029236
+    '<blockquote>\n<p>'
+      '<span class="katex-display"><span class="katex">'
+        '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>a</mi></mrow>'
+          '<annotation encoding="application/x-tex">a</annotation></semantics></math></span>'
+        '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal">a</span></span></span></span></span>'
+      '\n\n'
+      '<span class="katex-display"><span class="katex">'
+        '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>b</mi></mrow>'
+          '<annotation encoding="application/x-tex">b</annotation></semantics></math></span>'
+        '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">b</span></span></span></span></span>'
+      '<br>\n</p>\n</blockquote>',
+    [QuotationNode([
+      MathBlockNode(texSource: 'a', nodes: [
+        KatexSpanNode(nodes: [
+          KatexStrutNode(heightEm: 0.4306, verticalAlignEm: null),
+          KatexSpanNode(
+            styles: KatexSpanStyles(
+              fontFamily: 'KaTeX_Math',
+              fontStyle: KatexSpanFontStyle.italic),
+            text: 'a'),
+        ]),
+      ]),
+      MathBlockNode(texSource: 'b', nodes: [
+        KatexSpanNode(nodes: [
+          KatexStrutNode(heightEm: 0.6944, verticalAlignEm: null),
+          KatexSpanNode(
+            styles: KatexSpanStyles(
+              fontFamily: 'KaTeX_Math',
+              fontStyle: KatexSpanFontStyle.italic),
+            text: 'b'),
+        ]),
+      ]),
+    ])]);
+
+  static const mathBlockBetweenImages = ContentExample(
+    'math block between images',
+    // https://chat.zulip.org/#narrow/channel/7-test-here/topic/Greg/near/2035891
+    'https://upload.wikimedia.org/wikipedia/commons/7/78/Verregende_bloem_van_een_Helenium_%27El_Dorado%27._22-07-2023._%28d.j.b%29.jpg\n```math\na\n```\nhttps://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Zaadpluizen_van_een_Clematis_texensis_%27Princess_Diana%27._18-07-2023_%28actm.%29_02.jpg/1280px-Zaadpluizen_van_een_Clematis_texensis_%27Princess_Diana%27._18-07-2023_%28actm.%29_02.jpg',
+    '<div class="message_inline_image">'
+      '<a href="https://upload.wikimedia.org/wikipedia/commons/7/78/Verregende_bloem_van_een_Helenium_%27El_Dorado%27._22-07-2023._%28d.j.b%29.jpg">'
+        '<img src="/external_content/de28eb3abf4b7786de4545023dc42d434a2ea0c2/68747470733a2f2f75706c6f61642e77696b696d656469612e6f72672f77696b6970656469612f636f6d6d6f6e732f372f37382f566572726567656e64655f626c6f656d5f76616e5f65656e5f48656c656e69756d5f253237456c5f446f7261646f2532372e5f32322d30372d323032332e5f253238642e6a2e622532392e6a7067"></a></div>'
+    '<p>'
+      '<span class="katex-display"><span class="katex">'
+        '<span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>a</mi></mrow>'
+          '<annotation encoding="application/x-tex">a</annotation></semantics></math></span>'
+        '<span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal">a</span></span></span></span></span>'
+    '</p>\n'
+    '<div class="message_inline_image">'
+      '<a href="https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Zaadpluizen_van_een_Clematis_texensis_%27Princess_Diana%27._18-07-2023_%28actm.%29_02.jpg/1280px-Zaadpluizen_van_een_Clematis_texensis_%27Princess_Diana%27._18-07-2023_%28actm.%29_02.jpg">'
+        '<img src="/external_content/58b0ef9a06d7bb24faec2b11df2f57f476e6f6bb/68747470733a2f2f75706c6f61642e77696b696d656469612e6f72672f77696b6970656469612f636f6d6d6f6e732f7468756d622f372f37312f5a616164706c75697a656e5f76616e5f65656e5f436c656d617469735f746578656e7369735f2532375072696e636573735f4469616e612532372e5f31382d30372d323032335f2532386163746d2e2532395f30322e6a70672f3132383070782d5a616164706c75697a656e5f76616e5f65656e5f436c656d617469735f746578656e7369735f2532375072696e636573735f4469616e612532372e5f31382d30372d323032335f2532386163746d2e2532395f30322e6a7067"></a></div>',
+    [
+      ImageNodeList([
+        ImageNode(
+          srcUrl: '/external_content/de28eb3abf4b7786de4545023dc42d434a2ea0c2/68747470733a2f2f75706c6f61642e77696b696d656469612e6f72672f77696b6970656469612f636f6d6d6f6e732f372f37382f566572726567656e64655f626c6f656d5f76616e5f65656e5f48656c656e69756d5f253237456c5f446f7261646f2532372e5f32322d30372d323032332e5f253238642e6a2e622532392e6a7067',
+          thumbnailUrl: null,
+          loading: false,
+          originalWidth: null,
+          originalHeight: null),
+      ]),
+      MathBlockNode(texSource: 'a', nodes: [
+        KatexSpanNode(nodes: [
+          KatexStrutNode(heightEm: 0.4306, verticalAlignEm: null),
+          KatexSpanNode(
+            styles: KatexSpanStyles(
+              fontFamily: 'KaTeX_Math',
+              fontStyle: KatexSpanFontStyle.italic),
+            text: 'a'),
+        ]),
+      ]),
+      ImageNodeList([
+        ImageNode(
+          srcUrl: '/external_content/58b0ef9a06d7bb24faec2b11df2f57f476e6f6bb/68747470733a2f2f75706c6f61642e77696b696d656469612e6f72672f77696b6970656469612f636f6d6d6f6e732f7468756d622f372f37312f5a616164706c75697a656e5f76616e5f65656e5f436c656d617469735f746578656e7369735f2532375072696e636573735f4469616e612532372e5f31382d30372d323032335f2532386163746d2e2532395f30322e6a70672f3132383070782d5a616164706c75697a656e5f76616e5f65656e5f436c656d617469735f746578656e7369735f2532375072696e636573735f4469616e612532372e5f31382d30372d323032335f2532386163746d2e2532395f30322e6a7067',
+          thumbnailUrl: null,
+          loading: false,
+          originalWidth: null,
+          originalHeight: null),
+      ]),
+    ]);
 
   static const imageSingle = ContentExample(
     'single image',
@@ -763,7 +967,7 @@ class ContentExample {
         '<div class="message_inline_image">'
           '<a href="https://chat.zulip.org/user_avatars/2/realm/icon.png">'
             '<img src="https://chat.zulip.org/user_avatars/2/realm/icon.png"></a></div></li>\n</ul>', [
-    ListNode(ListStyle.unordered, [[
+    UnorderedListNode([[
       ImageNodeList([
         ImageNode(srcUrl: 'https://chat.zulip.org/user_avatars/2/realm/icon.png',
           thumbnailUrl: null, loading: false,
@@ -785,7 +989,7 @@ class ContentExample {
         '<div class="message_inline_image">'
           '<a href="https://chat.zulip.org/user_avatars/2/realm/icon.png?version=2" title="icon.png">'
             '<img src="https://chat.zulip.org/user_avatars/2/realm/icon.png?version=2"></a></div></li>\n</ul>', [
-    ListNode(ListStyle.unordered, [[
+    UnorderedListNode([[
       ParagraphNode(wasImplicit: true, links: null, nodes: [
         LinkNode(url: 'https://chat.zulip.org/user_avatars/2/realm/icon.png', nodes: [TextNode('icon.png')]),
         TextNode(' '),
@@ -814,7 +1018,7 @@ class ContentExample {
           '<a href="https://chat.zulip.org/user_avatars/2/realm/icon.png" title="icon.png">'
             '<img src="https://chat.zulip.org/user_avatars/2/realm/icon.png"></a></div>'
         'more text</li>\n</ul>', [
-    ListNode(ListStyle.unordered, [[
+    UnorderedListNode([[
       const ParagraphNode(wasImplicit: true, links: null, nodes: [
         LinkNode(url: 'https://chat.zulip.org/user_avatars/2/realm/icon.png', nodes: [TextNode('icon.png')]),
         TextNode(' '),
@@ -954,6 +1158,128 @@ class ContentExample {
       LinkNode(url: '/user_uploads/2/78/_KoRecCHZTFrVtyTKCkIh5Hq/Big-Buck-Bunny.webm', nodes: [TextNode('Big-Buck-Bunny.webm')]),
     ]),
     InlineVideoNode(srcUrl: '/user_uploads/2/78/_KoRecCHZTFrVtyTKCkIh5Hq/Big-Buck-Bunny.webm'),
+  ]);
+
+  static const audioInline = ContentExample(
+    'audio inline',
+    '![crab-rave.mp3](/user_uploads/2/f2/a_WnijOXIeRnI6OSxo9F6gZM/crab-rave.mp3)',
+    '<p><audio controls preload="metadata" src="/user_uploads/2/f2/a_WnijOXIeRnI6OSxo9F6gZM/crab-rave.mp3" title="crab-rave.mp3"></audio></p>', [
+    ParagraphNode(links: null, nodes: [
+      LinkNode(url: '/user_uploads/2/f2/a_WnijOXIeRnI6OSxo9F6gZM/crab-rave.mp3', nodes: [TextNode('crab-rave.mp3')]),
+    ]),
+  ]);
+
+  static const audioInlineNoTitle = ContentExample(
+    'audio inline no title',
+    '![](/user_uploads/2/f2/a_WnijOXIeRnI6OSxo9F6gZM/crab-rave.mp3)',
+    '<p><audio controls preload="metadata" src="/user_uploads/2/f2/a_WnijOXIeRnI6OSxo9F6gZM/crab-rave.mp3"></audio></p>', [
+    ParagraphNode(links: null, nodes: [
+      LinkNode(url: '/user_uploads/2/f2/a_WnijOXIeRnI6OSxo9F6gZM/crab-rave.mp3', nodes: [TextNode('crab-rave.mp3')]),
+    ]),
+  ]);
+
+  static const websitePreviewSmoke = ContentExample(
+    'website preview smoke',
+    'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html',
+    '<p><a href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html">https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html</a></p>\n'
+    '<div class="message_embed">'
+      '<a class="message_embed_image" href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html" style="background-image: url(&quot;https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67&quot;)"></a>'
+      '<div class="data-container">'
+        '<div class="message_embed_title"><a href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html" title="Zulip — organized team chat">Zulip — organized team chat</a></div>'
+        '<div class="message_embed_description">Zulip is an organized team chat app for distributed teams of all sizes.</div></div></div>', [
+    ParagraphNode(links: [], nodes: [
+      LinkNode(
+        nodes: [TextNode('https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html')],
+        url: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html'),
+    ]),
+    WebsitePreviewNode(
+      hrefUrl: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title+description.html',
+      imageSrcUrl: 'https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67',
+      title: 'Zulip — organized team chat',
+      description: 'Zulip is an organized team chat app for distributed teams of all sizes.'),
+  ]);
+
+  static const websitePreviewWithoutTitle = ContentExample(
+    'website preview without title',
+    'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html',
+    '<p><a href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html">https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html</a></p>\n'
+    '<div class="message_embed">'
+      '<a class="message_embed_image" href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html" style="background-image: url(&quot;https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67&quot;)"></a>'
+      '<div class="data-container">'
+        '<div class="message_embed_description">Zulip is an organized team chat app for distributed teams of all sizes.</div></div></div>', [
+    ParagraphNode(links: [], nodes: [
+      LinkNode(
+        nodes: [TextNode('https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html')],
+        url: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html'),
+    ]),
+    WebsitePreviewNode(
+      hrefUrl: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+description+notitle.html',
+      imageSrcUrl: 'https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67',
+      title: null,
+      description: 'Zulip is an organized team chat app for distributed teams of all sizes.'),
+  ]);
+
+  static const websitePreviewWithoutDescription = ContentExample(
+    'website preview without description',
+    'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html',
+    '<p><a href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html">https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html</a></p>\n'
+    '<div class="message_embed">'
+      '<a class="message_embed_image" href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html" style="background-image: url(&quot;https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67&quot;)"></a>'
+      '<div class="data-container">'
+        '<div class="message_embed_title"><a href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html" title="Zulip — organized team chat">Zulip — organized team chat</a></div></div></div>', [
+    ParagraphNode(links: [], nodes: [
+      LinkNode(
+        nodes: [TextNode('https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html')],
+        url: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html'),
+    ]),
+    WebsitePreviewNode(
+      hrefUrl: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+title.html',
+      imageSrcUrl: 'https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67',
+      title: 'Zulip — organized team chat',
+      description: null),
+  ]);
+
+  static const websitePreviewWithoutTitleOrDescription = ContentExample(
+    'website preview without title and description',
+    'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html',
+    '<p><a href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html">https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html</a></p>\n'
+    '<div class="message_embed">'
+      '<a class="message_embed_image" href="https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html" style="background-image: url(&quot;https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67&quot;)"></a>'
+      '<div class="data-container"></div></div>', [
+    ParagraphNode(links: [], nodes: [
+      LinkNode(
+        nodes: [TextNode('https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html')],
+        url: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html'),
+    ]),
+    WebsitePreviewNode(
+      hrefUrl: 'https://pub-14f7b5e1308d42b69c4a46608442a50c.r2.dev/image+nodescription+notitle.html',
+      imageSrcUrl: 'https://uploads.zulipusercontent.net/98fe2fe57d1ac641d4d84b6de2c520ff48fcf498/68747470733a2f2f7374617469632e7a756c6970636861742e636f6d2f7374617469632f696d616765732f6c6f676f2f7a756c69702d69636f6e2d313238783132382e706e67',
+      title: null,
+      description: null),
+  ]);
+
+  static const legacyWebsitePreviewSmoke = ContentExample(
+    'legacy website preview smoke',
+    // https://chat.zulip.org/#narrow/channel/7-test-here/topic/URL.20previews/near/192777
+    'www.youtube.com',
+    '<p><a href="http://www.youtube.com" target="_blank" title="http://www.youtube.com">www.youtube.com</a></p>\n'
+    '<div class="message_embed">'
+      '<a class="message_embed_image" href="http://www.youtube.com" style="background-image: url(https://youtube.com/yts/img/yt_1200-vfl4C3T0K.png)" target="_blank"></a>'
+      '<div class="data-container">'
+        '<div class="message_embed_title"><a href="http://www.youtube.com" target="_blank" title="YouTube">YouTube</a></div>'
+        '<div class="message_embed_description">Enjoy the videos and music you love, upload original content, and share it all with friends, family, and the world on YouTube.</div></div></div>', [
+    ParagraphNode(links: [], nodes: [
+      LinkNode(
+        nodes: [TextNode('www.youtube.com')],
+        url: 'http://www.youtube.com'),
+    ]),
+    WebsitePreviewNode(
+      hrefUrl: 'http://www.youtube.com',
+      imageSrcUrl: 'https://youtube.com/yts/img/yt_1200-vfl4C3T0K.png',
+      title: 'YouTube',
+      description: 'Enjoy the videos and music you love, upload '
+        'original content, and share it all with friends, family, and '
+        'the world on YouTube.'),
   ]);
 
   static const tableWithSingleRow = ContentExample(
@@ -1167,18 +1493,21 @@ UnimplementedInlineContentNode inlineUnimplemented(String html) {
   return UnimplementedInlineContentNode(htmlNode: fragment.nodes.single);
 }
 
-void testParse(String name, String html, List<BlockContentNode> nodes) {
+void testParse(String name, String html, List<BlockContentNode> nodes, {
+  Object? skip,
+}) {
   test(name, () {
     check(parseContent(html))
       .equalsNode(ZulipContent(nodes: nodes));
-  });
+  }, skip: skip);
 }
 
-void testParseExample(ContentExample example) {
-  testParse('parse ${example.description}', example.html, example.expectedNodes);
+void testParseExample(ContentExample example, {Object? skip}) {
+  testParse('parse ${example.description}', example.html, example.expectedNodes,
+    skip: skip);
 }
 
-void main() {
+void main() async {
   // When writing test cases in this file:
   //
   //  * Prefer to add a [ContentExample] static and use [testParseExample].
@@ -1186,6 +1515,8 @@ void main() {
   //    calling `testContentSmoke`, for a widgets test on the same example.
   //
   //  * To write the example, see comment at top of [ContentExample].
+
+  TestZulipBinding.ensureInitialized();
 
   //
   // Inline content.
@@ -1211,10 +1542,7 @@ void main() {
 
   testParseExample(ContentExample.strong);
 
-  testParseInline('parse deleted/strike-through',
-    // "~~strike through~~"
-    '<p><del>strike through</del></p>',
-    const DeletedNode(nodes: [TextNode('strike through')]));
+  testParseExample(ContentExample.deleted);
 
   testParseExample(ContentExample.emphasis);
 
@@ -1298,6 +1626,7 @@ void main() {
   testParseExample(ContentExample.emojiZulipExtra);
 
   testParseExample(ContentExample.mathInline);
+  testParseExample(ContentExample.mathInlineUnknown);
 
   group('global times', () {
     testParseExample(ContentExample.globalTime);
@@ -1382,7 +1711,7 @@ void main() {
     testParse('<ol>',
       // "1. first\n2. then"
       '<ol>\n<li>first</li>\n<li>then</li>\n</ol>', const [
-        ListNode(ListStyle.ordered, [
+        OrderedListNode(start: 1, [
           [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('first')])],
           [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('then')])],
         ]),
@@ -1391,7 +1720,7 @@ void main() {
     testParse('<ul>',
       // "* something\n* another"
       '<ul>\n<li>something</li>\n<li>another</li>\n</ul>', const [
-        ListNode(ListStyle.unordered, [
+        UnorderedListNode([
           [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('something')])],
           [ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('another')])],
         ]),
@@ -1400,7 +1729,7 @@ void main() {
     testParse('implicit paragraph with internal <br>',
       // "* a\n  b"
       '<ul>\n<li>a<br>\n  b</li>\n</ul>', const [
-        ListNode(ListStyle.unordered, [
+        UnorderedListNode([
           [ParagraphNode(wasImplicit: true, links: null, nodes: [
             TextNode('a'),
             LineBreakInlineNode(),
@@ -1412,13 +1741,16 @@ void main() {
     testParse('explicit paragraphs',
       // "* a\n\n  b"
       '<ul>\n<li>\n<p>a</p>\n<p>b</p>\n</li>\n</ul>', const [
-        ListNode(ListStyle.unordered, [
+        UnorderedListNode([
           [
             ParagraphNode(links: null, nodes: [TextNode('a')]),
             ParagraphNode(links: null, nodes: [TextNode('b')]),
           ],
         ]),
       ]);
+
+    testParseExample(ContentExample.orderedListCustomStart);
+    testParseExample(ContentExample.orderedListLargeStart);
   });
 
   testParseExample(ContentExample.spoilerDefaultHeader);
@@ -1451,7 +1783,7 @@ void main() {
     testParse('link in list item',
       // "* [t](/u)"
       '<ul>\n<li><a href="/u">t</a></li>\n</ul>', const [
-        ListNode(ListStyle.unordered, [
+        UnorderedListNode([
           [ParagraphNode(links: null, wasImplicit: true, nodes: [
             LinkNode(url: '/u', nodes: [TextNode('t')]),
           ])],
@@ -1469,8 +1801,16 @@ void main() {
   testParseExample(ContentExample.codeBlockWithUnknownSpanType);
   testParseExample(ContentExample.codeBlockFollowedByMultipleLineBreaks);
 
+  // The math examples in this file are about how math blocks and spans fit
+  // into the context of a Zulip message.
+  // For tests going deeper inside KaTeX content, see katex_test.dart.
   testParseExample(ContentExample.mathBlock);
+  testParseExample(ContentExample.mathBlockUnknown);
+
+  testParseExample(ContentExample.mathBlocksMultipleInParagraph);
   testParseExample(ContentExample.mathBlockInQuote);
+  testParseExample(ContentExample.mathBlocksMultipleInQuote);
+  testParseExample(ContentExample.mathBlockBetweenImages);
 
   testParseExample(ContentExample.imageSingle);
   testParseExample(ContentExample.imageSingleNoDimensions);
@@ -1494,6 +1834,15 @@ void main() {
   testParseExample(ContentExample.videoInline);
   testParseExample(ContentExample.videoInlineClassesFlipped);
 
+  testParseExample(ContentExample.audioInline);
+  testParseExample(ContentExample.audioInlineNoTitle);
+
+  testParseExample(ContentExample.websitePreviewSmoke);
+  testParseExample(ContentExample.websitePreviewWithoutTitle);
+  testParseExample(ContentExample.websitePreviewWithoutDescription);
+  testParseExample(ContentExample.websitePreviewWithoutTitleOrDescription);
+  testParseExample(ContentExample.legacyWebsitePreviewSmoke);
+
   testParseExample(ContentExample.tableWithSingleRow);
   testParseExample(ContentExample.tableWithMultipleRows);
   testParseExample(ContentExample.tableWithBoldAndItalicHeaders);
@@ -1509,10 +1858,10 @@ void main() {
     '<ol>\n<li>\n<blockquote>\n<h6>two</h6>\n<ul>\n<li>three</li>\n'
         '</ul>\n</blockquote>\n<div class="codehilite"><pre><span></span>'
         '<code>four\n</code></pre></div>\n\n</li>\n</ol>', const [
-      ListNode(ListStyle.ordered, [[
+      OrderedListNode(start: 1, [[
         QuotationNode([
           HeadingNode(level: HeadingLevel.h6, links: null, nodes: [TextNode('two')]),
-          ListNode(ListStyle.unordered, [[
+          UnorderedListNode([[
             ParagraphNode(wasImplicit: true, links: null, nodes: [TextNode('three')]),
           ]]),
         ]),
@@ -1538,7 +1887,7 @@ void main() {
       r'^\s*static\s+(?:const|final)\s+(\w+)\s*=\s*ContentExample\s*(?:\.\s*inline\s*)?\(',
     ).allMatches(source).map((m) => m.group(1));
     final testedExamples = RegExp(multiLine: true,
-      r'^\s*testParseExample\s*\(\s*ContentExample\s*\.\s*(\w+)\);',
+      r'^\s*testParseExample\s*\(\s*ContentExample\s*\.\s*(\w+)(?:,\s*skip:\s*true)?\s*\);',
     ).allMatches(source).map((m) => m.group(1));
     check(testedExamples).unorderedEquals(declaredExamples);
   }, skip: Platform.isWindows, // [intended] purely analyzes source, so

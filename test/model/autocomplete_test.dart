@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:checks/checks.dart';
 import 'package:flutter/widgets.dart';
+import 'package:http/http.dart' as http;
 import 'package:test/scaffolding.dart';
 import 'package:zulip/api/model/initial_snapshot.dart';
 import 'package:zulip/api/model/model.dart';
@@ -19,15 +20,13 @@ import 'package:zulip/widgets/compose_box.dart';
 import '../api/fake_api.dart';
 import '../example_data.dart' as eg;
 import '../fake_async.dart';
+import '../stdlib_checks.dart';
 import 'test_store.dart';
 import 'autocomplete_checks.dart';
 
 typedef MarkedTextParse = ({int? expectedSyntaxStart, TextEditingValue value});
 
 final zulipLocalizations = GlobalLocalizations.zulipLocalizations;
-final zulipLocalizationsArabic =
-  lookupZulipLocalizations(ZulipLocalizations.supportedLocales
-    .firstWhere((locale) => locale.languageCode == 'ar'));
 
 void main() {
   ({int? expectedSyntaxStart, TextEditingValue value}) parseMarkedText(String markedText) {
@@ -318,21 +317,39 @@ void main() {
     for (int i = 1; i <= 2500; i++) {
       await store.addUser(eg.user(userId: i, email: 'user$i@example.com', fullName: 'User $i'));
     }
+    for (int i = 1; i <= 2500; i++) {
+      await store.addUserGroup(eg.userGroup(id: i, name: 'User Group $i'));
+    }
 
     bool done = false;
     final view = MentionAutocompleteView.init(store: store, localizations: zulipLocalizations,
       narrow: narrow, query: MentionAutocompleteQuery('User 2222'));
     view.addListener(() { done = true; });
 
+    // three batches for users
+    await Future(() {});
+    check(done).isFalse();
+    await Future(() {});
+    check(done).isFalse();
+    await Future(() {});
+    check(done).isFalse();
+
+    // three batches for user groups
     await Future(() {});
     check(done).isFalse();
     await Future(() {});
     check(done).isFalse();
     await Future(() {});
     check(done).isTrue();
-    check(view.results).single
-      .isA<UserMentionAutocompleteResult>()
-      .userId.equals(2222);
+
+    check(view.results).deepEquals(<Condition<Object?>>[
+      (it) => it
+        .isA<UserMentionAutocompleteResult>()
+        .userId.equals(2222),
+      (it) => it
+        .isA<UserGroupMentionAutocompleteResult>()
+        .groupId.equals(2222),
+    ]);
   });
 
   test('MentionAutocompleteView new query during computation replaces old', () async {
@@ -340,6 +357,9 @@ void main() {
     final store = eg.store();
     for (int i = 1; i <= 1500; i++) {
       await store.addUser(eg.user(userId: i, email: 'user$i@example.com', fullName: 'User $i'));
+    }
+    for (int i = 1; i <= 1500; i++) {
+      await store.addUserGroup(eg.userGroup(id: i, name: 'User Group $i'));
     }
 
     bool done = false;
@@ -351,25 +371,37 @@ void main() {
     check(done).isFalse();
     view.query = MentionAutocompleteQuery('User 234');
 
-    // …new query goes through all batches
+    // …new query goes through all user batches
+    await Future(() {});
+    check(done).isFalse();
+    await Future(() {});
+    check(done).isFalse();
+    // …and all user-group batches
     await Future(() {});
     check(done).isFalse();
     await Future(() {});
     check(done).isTrue(); // new result is set
-    check(view.results).single
-      .isA<UserMentionAutocompleteResult>()
-      .userId.equals(234);
+
+    void checkResult() {
+      check(view.results).deepEquals(<Condition<Object?>>[
+        (it) => it
+          .isA<UserMentionAutocompleteResult>()
+          .userId.equals(234),
+        (it) => it
+          .isA<UserGroupMentionAutocompleteResult>()
+          .groupId.equals(234),
+      ]);
+    }
+    checkResult();
 
     // new result sticks; it isn't clobbered with old query's result
     for (int i = 0; i < 10; i++) { // for good measure
       await Future(() {});
-      check(view.results).single
-        .isA<UserMentionAutocompleteResult>()
-        .userId.equals(234);
+      checkResult();
     }
   });
 
-  test('MentionAutocompleteView mutating store.users while in progress does not '
+  test('MentionAutocompleteView mutating user store while in progress does not '
       'prevent query from finishing', () async {
     const narrow = ChannelNarrow(1);
     final store = eg.store();
@@ -401,62 +433,24 @@ void main() {
       ..not((results) => results.contains(11000));
   });
 
-  group('MentionAutocompleteQuery.testUser', () {
-    void doCheck(String rawQuery, User user, bool expected) {
-      final result = MentionAutocompleteQuery(rawQuery)
-        .testUser(user, AutocompleteDataCache());
-      expected ? check(result).isTrue() : check(result).isFalse();
-    }
-
-    test('user is always excluded when not active regardless of other criteria', () {
-      doCheck('Full Name', eg.user(fullName: 'Full Name', isActive: false), false);
-      // When active then other criteria will be checked
-      doCheck('Full Name', eg.user(fullName: 'Full Name', isActive: true), true);
-    });
-
-    test('user is included if fullname words match the query', () {
-      doCheck('', eg.user(fullName: 'Full Name'), true);
-      doCheck('', eg.user(fullName: ''), true); // Unlikely case, but should not crash
-      doCheck('Full Name', eg.user(fullName: 'Full Name'), true);
-      doCheck('full name', eg.user(fullName: 'Full Name'), true);
-      doCheck('Full Name', eg.user(fullName: 'full name'), true);
-      doCheck('Full', eg.user(fullName: 'Full Name'), true);
-      doCheck('Name', eg.user(fullName: 'Full Name'), true);
-      doCheck('Full Name', eg.user(fullName: 'Fully Named'), true);
-      doCheck('Full Four', eg.user(fullName: 'Full Name Four Words'), true);
-      doCheck('Name Words', eg.user(fullName: 'Full Name Four Words'), true);
-      doCheck('Full F', eg.user(fullName: 'Full Name Four Words'), true);
-      doCheck('F Four', eg.user(fullName: 'Full Name Four Words'), true);
-      doCheck('full full', eg.user(fullName: 'Full Full Name'), true);
-      doCheck('full full', eg.user(fullName: 'Full Name Full'), true);
-
-      doCheck('F', eg.user(fullName: ''), false); // Unlikely case, but should not crash
-      doCheck('Fully Named', eg.user(fullName: 'Full Name'), false);
-      doCheck('Full Name', eg.user(fullName: 'Full'), false);
-      doCheck('Full Name', eg.user(fullName: 'Name'), false);
-      doCheck('ull ame', eg.user(fullName: 'Full Name'), false);
-      doCheck('ull Name', eg.user(fullName: 'Full Name'), false);
-      doCheck('Full ame', eg.user(fullName: 'Full Name'), false);
-      doCheck('Full Full', eg.user(fullName: 'Full Name'), false);
-      doCheck('Name Name', eg.user(fullName: 'Full Name'), false);
-      doCheck('Name Full', eg.user(fullName: 'Full Name'), false);
-      doCheck('Name Four Full Words', eg.user(fullName: 'Full Name Four Words'), false);
-      doCheck('F Full', eg.user(fullName: 'Full Name Four Words'), false);
-      doCheck('Four F', eg.user(fullName: 'Full Name Four Words'), false);
-    });
-  });
-
-  group('MentionAutocompleteView sorting users results', () {
+  group('MentionAutocompleteView sorting results', () {
     late PerAccountStore store;
 
     Future<void> prepare({
+      User? selfUser,
       List<User> users = const [],
+      List<UserGroup> userGroups = const [],
       List<RecentDmConversation> dmConversations = const [],
       List<Message> messages = const [],
     }) async {
-      store = eg.store(initialSnapshot: eg.initialSnapshot(
+      selfUser ??= eg.selfUser;
+      if (!users.contains(selfUser)) {
+        users = [...users, selfUser];
+      }
+      store = eg.store(selfUser: selfUser, initialSnapshot: eg.initialSnapshot(
+        realmUsers: users,
         recentPrivateConversations: dmConversations));
-      await store.addUsers(users);
+      await store.addUserGroups(userGroups);
       await store.addMessages(messages);
     }
 
@@ -789,18 +783,28 @@ void main() {
         final view = MentionAutocompleteView.init(store: store,
           localizations: zulipLocalizations, narrow: narrow, query: query);
         view.addListener(() { done = true; });
-        await Future(() {});
+        await Future(() {}); // users
+        await Future(() {}); // groups
         check(done).isTrue();
         final results = view.results;
         view.dispose();
         return results;
       }
 
-      Iterable<int> getUsersFromResults(Iterable<MentionAutocompleteResult> results)
-        => results.map((e) => (e as UserMentionAutocompleteResult).userId);
+      Condition<Object?> isUser(int userId) {
+        return (it) => it.isA<UserMentionAutocompleteResult>()
+          .userId.equals(userId);
+      }
 
-      Iterable<WildcardMentionOption> getWildcardOptionsFromResults(Iterable<MentionAutocompleteResult> results)
-        => results.map((e) => (e as WildcardMentionAutocompleteResult).wildcardOption);
+      Condition<Object?> isUserGroup(int id) {
+        return (it) => it.isA<UserGroupMentionAutocompleteResult>()
+          .groupId.equals(id);
+      }
+
+      Condition<Object?> isWildcard(WildcardMentionOption option) {
+        return (it) => it.isA<WildcardMentionAutocompleteResult>()
+          .wildcardOption.equals(option);
+      }
 
       final stream = eg.stream();
       const topic = 'topic';
@@ -815,37 +819,51 @@ void main() {
         eg.user(userId: 6, fullName: 'User Six', isBot: true),
         eg.user(userId: 7, fullName: 'User Seven'),
       ];
+      final selfUser = users.last;
 
-      await prepare(users: users, messages: [
-        eg.streamMessage(id: 50, sender: users[1-1], stream: stream, topic: topic),
-        eg.streamMessage(id: 60, sender: users[5-1], stream: stream, topic: 'other $topic'),
-      ], dmConversations: [
-        RecentDmConversation(userIds: [4],    maxMessageId: 300),
-        RecentDmConversation(userIds: [1],    maxMessageId: 200),
-        RecentDmConversation(userIds: [1, 2], maxMessageId: 100),
-      ]);
+      final userGroups = [
+        eg.userGroup(id: 1, name: 'User Group One'),
+        eg.userGroup(id: 2, name: 'User Group Two'),
+        eg.userGroup(id: 3, name: 'User Group Three'),
+        eg.userGroup(id: 4, name: 'User Group Four'),
+      ];
 
-      // Check the ranking of the full list of mentions.
+      await prepare(users: users, selfUser: selfUser, userGroups: userGroups,
+        messages: [
+          eg.streamMessage(sender: users[1-1], stream: stream, topic: topic),
+          eg.streamMessage(sender: users[5-1], stream: stream, topic: 'other $topic'),
+          eg.dmMessage(from: users[1-1], to: [users[2-1], selfUser]),
+          eg.dmMessage(from: users[1-1], to: [selfUser]),
+          eg.dmMessage(from: users[4-1], to: [selfUser]),
+        ]);
+
+      // Check the ranking of the full list of mentions,
+      // i.e. the results for an empty query.
       // The order should be:
-      // 1. Wildcards before individual users.
+      // 1. Wildcards before individual users; user groups (alphabetically) after.
       // 2. Users most recent in the current topic/stream.
       // 3. Users most recent in the DM conversations.
       // 4. Human vs. Bot users (human users come first).
       // 5. Users by name alphabetical order.
-      final results1 = await getResults(topicNarrow, MentionAutocompleteQuery(''));
-      check(getWildcardOptionsFromResults(results1.take(2)))
-        .deepEquals([WildcardMentionOption.all, WildcardMentionOption.topic]);
-      check(getUsersFromResults(results1.skip(2)))
-        .deepEquals([1, 5, 4, 2, 7, 3, 6]);
+      // 6. User groups by name alphabetical order.
+      check(await getResults(topicNarrow, MentionAutocompleteQuery(''))).deepEquals([
+        isWildcard(WildcardMentionOption.all),
+        isWildcard(WildcardMentionOption.topic),
+        ...[1, 5, 4, 2, 7, 3, 6].map(isUser),
+        ...[4, 1, 3, 2].map(isUserGroup),
+      ]);
 
       // Check the ranking applies also to results filtered by a query.
-      final results2 = await getResults(topicNarrow, MentionAutocompleteQuery('t'));
-      check(getWildcardOptionsFromResults(results2.take(2)))
-        .deepEquals([WildcardMentionOption.stream, WildcardMentionOption.topic]);
-      check(getUsersFromResults(results2.skip(2))).deepEquals([2, 3]);
-      final results3 = await getResults(topicNarrow, MentionAutocompleteQuery('f'));
-      check(getWildcardOptionsFromResults(results3.take(0))).deepEquals([]);
-      check(getUsersFromResults(results3.skip(0))).deepEquals([5, 4]);
+      check(await getResults(topicNarrow, MentionAutocompleteQuery('t'))).deepEquals([
+        isWildcard(WildcardMentionOption.stream),
+        isWildcard(WildcardMentionOption.topic),
+        isUser(2), isUser(3), // 2 before 3 by DM recency
+        isUserGroup(3), isUserGroup(2), // 3 before 2 by alphabet ("…Three" before "…Two")
+      ]);
+      check(await getResults(topicNarrow, MentionAutocompleteQuery('f'))).deepEquals([
+        isUser(5), isUser(4),
+        isUserGroup(4),
+      ]);
     });
   });
 
@@ -901,25 +919,48 @@ void main() {
       });
     }
 
-    final localizedTestCases = [
-      ('ال',        channelNarrow, [WildcardMentionOption.all, WildcardMentionOption.topic]),
-      ('الجميع',    topicNarrow,   [WildcardMentionOption.all]),
-      ('الموضوع',   channelNarrow, [WildcardMentionOption.topic]),
-      ('ق',         topicNarrow,   [WildcardMentionOption.channel]),
-      ('دفق',       channelNarrow, [WildcardMentionOption.stream]),
-      ('الكل',      dmNarrow,      [WildcardMentionOption.everyone]),
+    WildcardTester wildcardTesterForLocale(bool Function(Locale) localePredicate) {
+      final locale = ZulipLocalizations.supportedLocales.firstWhere(localePredicate);
+      final localizations = lookupZulipLocalizations(locale);
 
-      ('top',       channelNarrow, [WildcardMentionOption.topic]),
-      ('channel',   topicNarrow,   [WildcardMentionOption.channel]),
-      ('every',     dmNarrow,      [WildcardMentionOption.everyone]),
-    ];
-
-    for (final (String localizedQuery, Narrow narrow, List<WildcardMentionOption> wildcardOptions) in localizedTestCases) {
-      test('different locale -> query "$localizedQuery" in ${narrow.runtimeType} -> $wildcardOptions', () async {
-        check(getWildcardOptionsFor(localizedQuery, narrow: narrow,
-          localizations: zulipLocalizationsArabic)).deepEquals(wildcardOptions);
-      });
+      return (String query, Narrow narrow, List<WildcardMentionOption> expected) {
+        test('locale "$locale" -> query "$query" in ${narrow.runtimeType} -> $expected', () {
+          check(getWildcardOptionsFor(query, narrow: narrow,
+            localizations: localizations)).deepEquals(expected);
+        });
+      };
     }
+
+    for (final option in WildcardMentionOption.values) {
+      // These are hard-coded, and they happened to be lowercase and without
+      // diacritics when written.
+      // Throw if that changes, to not accidentally break fuzzy matching.
+      check(option.canonicalString).equals(
+        AutocompleteQuery.lowercaseAndStripDiacritics(option.canonicalString));
+    }
+
+    final testArabic = wildcardTesterForLocale((locale) => locale.languageCode == 'ar');
+    testArabic('ال',        channelNarrow, [WildcardMentionOption.all, WildcardMentionOption.topic]);
+    testArabic('الجميع',    topicNarrow,   [WildcardMentionOption.all]);
+    testArabic('الموضوع',   channelNarrow, [WildcardMentionOption.topic]);
+    testArabic('ق',         topicNarrow,   [WildcardMentionOption.channel]);
+    testArabic('دفق',       channelNarrow, [WildcardMentionOption.stream]);
+    testArabic('الكل',      dmNarrow,      [WildcardMentionOption.everyone]);
+    testArabic('top',       channelNarrow, [WildcardMentionOption.topic]);
+    testArabic('channel',   topicNarrow,   [WildcardMentionOption.channel]);
+    testArabic('every',     dmNarrow,      [WildcardMentionOption.everyone]);
+
+    final testEnglish = wildcardTesterForLocale((locale) => locale.languageCode == 'en');
+    testEnglish('topic',     topicNarrow,   [WildcardMentionOption.topic]);
+    testEnglish('Topic',     topicNarrow,   [WildcardMentionOption.topic]);
+
+    final testGerman = wildcardTesterForLocale((locale) => locale.languageCode == 'de');
+    testGerman('Thema',     topicNarrow,   [WildcardMentionOption.topic]);
+    testGerman('thema',     topicNarrow,   [WildcardMentionOption.topic]);
+
+    final testPolish = wildcardTesterForLocale((locale) => locale.languageCode == 'pl');
+    testPolish('wątek',     topicNarrow,   [WildcardMentionOption.topic]);
+    testPolish('watek',     topicNarrow,   [WildcardMentionOption.topic]);
 
     test('no wildcards for a silent mention', () {
       check(getWildcardOptionsFor('', isSilent: true, narrow: channelNarrow))
@@ -952,6 +993,216 @@ void main() {
       check(getWildcardOptionsFor('topic',
           narrow: channelNarrow, zulipFeatureLevel: 223))
         .deepEquals([]);
+    });
+  });
+
+  group('MentionAutocompleteQuery.testUser', () {
+    late PerAccountStore store;
+
+    void doCheck(String rawQuery, User user, bool expected) {
+      final result = MentionAutocompleteQuery(rawQuery).testUser(user, store);
+      expected
+        ? check(result).isA<UserMentionAutocompleteResult>()
+        : check(result).isNull();
+    }
+
+    test('user is always excluded when not active regardless of other criteria', () {
+      store = eg.store();
+
+      doCheck('Full Name', eg.user(fullName: 'Full Name', isActive: false), false);
+      // When active then other criteria will be checked
+      doCheck('Full Name', eg.user(fullName: 'Full Name', isActive: true), true);
+    });
+
+    test('user is always excluded when muted, regardless of other criteria', () async {
+      store = eg.store();
+      await store.setMutedUsers([1]);
+      doCheck('Full Name', eg.user(userId: 1, fullName: 'Full Name'), false);
+      // When not muted, then other criteria will be checked
+      doCheck('Full Name', eg.user(userId: 2, fullName: 'Full Name'), true);
+    });
+
+    test('user is included if fullname words match the query', () {
+      store = eg.store();
+
+      doCheck('', eg.user(fullName: 'Full Name'), true);
+      doCheck('', eg.user(fullName: ''), true); // Unlikely case, but should not crash
+      doCheck('Full Name', eg.user(fullName: 'Full Name'), true);
+      doCheck('full name', eg.user(fullName: 'Full Name'), true);
+      doCheck('Full Name', eg.user(fullName: 'full name'), true);
+      doCheck('Full', eg.user(fullName: 'Full Name'), true);
+      doCheck('Name', eg.user(fullName: 'Full Name'), true);
+      doCheck('Full Name', eg.user(fullName: 'Fully Named'), true);
+      doCheck('Full Four', eg.user(fullName: 'Full Name Four Words'), true);
+      doCheck('Name Words', eg.user(fullName: 'Full Name Four Words'), true);
+      doCheck('Full F', eg.user(fullName: 'Full Name Four Words'), true);
+      doCheck('F Four', eg.user(fullName: 'Full Name Four Words'), true);
+      doCheck('full full', eg.user(fullName: 'Full Full Name'), true);
+      doCheck('full full', eg.user(fullName: 'Full Name Full'), true);
+
+      doCheck('F', eg.user(fullName: ''), false); // Unlikely case, but should not crash
+      doCheck('Fully Named', eg.user(fullName: 'Full Name'), false);
+      doCheck('Full Name', eg.user(fullName: 'Full'), false);
+      doCheck('Full Name', eg.user(fullName: 'Name'), false);
+      doCheck('ull ame', eg.user(fullName: 'Full Name'), false);
+      doCheck('ull Name', eg.user(fullName: 'Full Name'), false);
+      doCheck('Full ame', eg.user(fullName: 'Full Name'), false);
+      doCheck('Full Full', eg.user(fullName: 'Full Name'), false);
+      doCheck('Name Name', eg.user(fullName: 'Full Name'), false);
+      doCheck('Name Full', eg.user(fullName: 'Full Name'), false);
+      doCheck('Name Four Full Words', eg.user(fullName: 'Full Name Four Words'), false);
+      doCheck('F Full', eg.user(fullName: 'Full Name Four Words'), false);
+      doCheck('Four F', eg.user(fullName: 'Full Name Four Words'), false);
+    });
+  });
+
+  group('MentionAutocompleteQuery ranking', () {
+    // This gets filled lazily, but never reset.
+    // We're counting on this group's tests never doing anything to mutate it.
+    PerAccountStore? store;
+
+    int? rankOf(String queryStr, Object candidate) {
+      final query = MentionAutocompleteQuery(queryStr);
+      final result = switch (candidate) {
+        WildcardMentionOption() => query.testWildcardOption(candidate,
+          localizations: GlobalLocalizations.zulipLocalizations),
+        User() => query.testUser(candidate, (store ??= eg.store())),
+        UserGroup() => query.testUserGroup(candidate, (store ??= eg.store())),
+        _ => throw StateError('invalid candidate'),
+      };
+      return result?.rank;
+    }
+
+    void checkPrecedes(String query, Object a, Object b) {
+      check(rankOf(query, a)!).isLessThan(rankOf(query, b)!);
+    }
+
+    void checkSameRank(String query, Object a, Object b) {
+      check(rankOf(query, a)!).equals(rankOf(query, b)!);
+    }
+
+    void checkAllSameRank(String query, Iterable<Object> candidates) {
+      // (i.e. throw here if it's not a match)
+      final firstCandidateRank = rankOf(query, candidates.first)!;
+
+      final ranks = candidates.skip(1).map((candidate) => rankOf(query, candidate));
+      check(ranks).every((it) => it.equals(firstCandidateRank));
+    }
+
+    test('wildcards, then users', () {
+      checkSameRank('', WildcardMentionOption.all, WildcardMentionOption.topic);
+      checkPrecedes('', WildcardMentionOption.topic, eg.user());
+      checkSameRank('', eg.user(), eg.user());
+    });
+
+    test('wildcard-vs-user more significant than match quality', () {
+      // Make the query an exact match for the user's name.
+      final user = eg.user(fullName: 'Ann');
+      checkPrecedes(user.fullName, WildcardMentionOption.channel, user);
+    });
+
+    test('user name match is case- and diacritics-insensitive', () {
+      final users = [
+        eg.user(fullName: 'Édith Piaf'),
+        eg.user(fullName: 'édith piaf'),
+        eg.user(fullName: 'Edith Piaf'),
+        eg.user(fullName: 'edith piaf'),
+      ];
+
+      checkAllSameRank('Édith Piaf', users); // exact
+      checkAllSameRank('Edith Piaf', users); // exact
+      checkAllSameRank('édith piaf', users); // exact
+      checkAllSameRank('edith piaf', users); // exact
+
+      checkAllSameRank('Édith Pi',   users); // total-prefix
+      checkAllSameRank('Edith Pi',   users); // total-prefix
+      checkAllSameRank('édith pi',   users); // total-prefix
+      checkAllSameRank('edith pi',   users); // total-prefix
+
+      checkAllSameRank('Éd Pi',      users); // word-prefixes
+      checkAllSameRank('Ed Pi',      users); // word-prefixes
+      checkAllSameRank('éd pi',      users); // word-prefixes
+      checkAllSameRank('ed pi',      users); // word-prefixes
+    });
+
+    test('user name match: exact over total-prefix', () {
+      final user1 = eg.user(fullName: 'Chris');
+      final user2 = eg.user(fullName: 'Chris Bobbe');
+
+      checkPrecedes('chris', user1, user2);
+    });
+
+    test('user name match: total-prefix over word-prefixes', () {
+      final user1 = eg.user(fullName: 'So Many Ideas');
+      final user2 = eg.user(fullName: 'Some Merry User');
+
+      checkPrecedes('so m', user1, user2);
+    });
+
+    test('group name is case- and diacritics-insensitive', () {
+      final userGroups = [
+        eg.userGroup(name: 'Mobile Team'),
+        eg.userGroup(name: 'mobile team'),
+        eg.userGroup(name: 'möbile team'),
+      ];
+
+      checkAllSameRank('mobile team', userGroups); // exact
+      checkAllSameRank('mobile te',   userGroups); // total-prefix
+      checkAllSameRank('mob te',      userGroups); // word-prefixes
+    });
+
+    test('group name match: exact over total-prefix', () {
+      final userGroup1 = eg.userGroup(name: 'Mobile');
+      final userGroup2 = eg.userGroup(name: 'Mobile Team');
+
+      checkPrecedes('mobile', userGroup1, userGroup2);
+    });
+
+    test('group name match: total-prefix over word-prefixes', () {
+      final userGroup1 = eg.userGroup(name: 'So Many Ideas');
+      final userGroup2 = eg.userGroup(name: 'Some Merry Group');
+
+      checkPrecedes('so m', userGroup1, userGroup2);
+    });
+
+    test('email match is case- and diacritics-insensitive', () {
+      // "z" name to prevent accidental name match with example data
+      final users = [
+        eg.user(fullName: 'z', deliveryEmail: 'email@example.com'),
+        eg.user(fullName: 'z', deliveryEmail: 'EmAiL@ExAmPlE.com'),
+        eg.user(fullName: 'z', deliveryEmail: 'ēmail@example.com'),
+      ];
+
+      checkAllSameRank('email@example.com', users);
+      checkAllSameRank('email@e',           users);
+      checkAllSameRank('email@',            users);
+      checkAllSameRank('email',             users);
+      checkAllSameRank('ema',               users);
+    });
+
+    test('email match is by prefix only', () {
+      // "z" name to prevent accidental name match with example data
+      final user = eg.user(fullName: 'z', deliveryEmail: 'email@example.com');
+
+      check(rankOf('e',           user)).isNotNull();
+      check(rankOf('mail',        user)).isNull();
+      check(rankOf('example',     user)).isNull();
+      check(rankOf('example.com', user)).isNull();
+    });
+
+    test('full list of ranks', () {
+      final user1 = eg.user(fullName: 'some user', deliveryEmail: 'email@example.com');
+      final userGroup1 = eg.userGroup(name: 'some user group');
+      check([
+        rankOf('', WildcardMentionOption.all), // wildcard
+        rankOf('some user', user1),            // user, exact name match
+        rankOf('some us', user1),              // user, total-prefix name match
+        rankOf('so us', user1),                // user, word-prefixes name match
+        rankOf('some user group', userGroup1), // user group, exact name match
+        rankOf('some us', userGroup1),         // user group, total-prefix name match
+        rankOf('so us gr', userGroup1),        // user group, word-prefixes name match
+        rankOf('email', user1),                // user, no name match, email match
+      ]).deepEquals([0, 1, 2, 3, 4, 5, 6, 7]);
     });
   });
 
@@ -1026,9 +1277,25 @@ void main() {
     check(done).isTrue();
   });
 
+  test('TopicAutocompleteView getStreamTopics request', () async {
+    final store = eg.store();
+    final connection = store.connection as FakeApiConnection;
+
+    connection.prepare(json: GetStreamTopicsResult(
+      topics: [eg.getStreamTopicsEntry(name: '')],
+    ).toJson());
+    TopicAutocompleteView.init(store: store, streamId: 1000,
+      query: TopicAutocompleteQuery('foo'));
+    check(connection.lastRequest).isA<http.Request>()
+      ..method.equals('GET')
+      ..url.path.equals('/api/v1/users/me/1000/topics')
+      ..url.queryParameters['allow_empty_topic_name'].equals('true');
+  });
+
   group('TopicAutocompleteQuery.testTopic', () {
+    final store = eg.store();
     void doCheck(String rawQuery, String topic, bool expected) {
-      final result = TopicAutocompleteQuery(rawQuery).testTopic(eg.t(topic));
+      final result = TopicAutocompleteQuery(rawQuery).testTopic(eg.t(topic), store);
       expected ? check(result).isTrue() : check(result).isFalse();
     }
 
@@ -1041,3 +1308,5 @@ void main() {
     });
   });
 }
+
+typedef WildcardTester = void Function(String query, Narrow narrow, List<WildcardMentionOption> expected);
